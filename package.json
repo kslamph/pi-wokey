@@ -1,6 +1,6 @@
 {
 	"name": "pi-wokey",
-	"version": "0.3.0",
+	"version": "0.3.1",
 	"description": "pi provider for wokey.ai GPT models, verifying every response against its Proof-of-Observation TEE statement (warn-only)",
 	"keywords": [
 		"pi-package",
@@ -24,6 +24,7 @@
 		"config.ts",
 		"models.ts",
 		"stream.ts",
+		"tui.ts",
 		"verify",
 		"docs",
 		"README.md",
