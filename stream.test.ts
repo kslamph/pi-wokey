@@ -81,6 +81,43 @@ describe("wokey streamSimple wiring", () => {
 		expect((await onPayload({ a: 2 }, model)).prompt_cache_key).toBe("session-xyz");
 	});
 
+	it("sends codex's session-id affinity header carrying the same key as the body", async () => {
+		const config = resolveConfig({ codexEnvelope: true });
+		createWokeyStream({ config, onReport: () => {} })(model, context, { sessionId: "session-xyz" });
+
+		const opts = lastOptions();
+		// Codex sends prompt_cache_key as the `session-id` header; both must be the same string.
+		expect((opts.headers as Record<string, string>)["session-id"]).toBe("session-xyz");
+		const onPayload = opts.onPayload as (p: unknown, m: unknown) => Promise<Record<string, unknown>>;
+		expect((await onPayload({ a: 1 }, model)).prompt_cache_key).toBe("session-xyz");
+	});
+
+	it("clamps a long session id identically in the header and the body", async () => {
+		const long = "s".repeat(80);
+		const config = resolveConfig({ codexEnvelope: true });
+		createWokeyStream({ config, onReport: () => {} })(model, context, { sessionId: long });
+
+		const opts = lastOptions();
+		const header = (opts.headers as Record<string, string>)["session-id"];
+		const onPayload = opts.onPayload as (p: unknown, m: unknown) => Promise<Record<string, unknown>>;
+		const body = (await onPayload({ a: 1 }, model)).prompt_cache_key;
+
+		// pi truncates the body key at 64 chars; the header must match, not exceed it.
+		expect(header).toBe("s".repeat(64));
+		expect(header).toBe(body);
+	});
+
+	it("does not overwrite a caller-supplied session-id header", () => {
+		const config = resolveConfig();
+		createWokeyStream({ config, onReport: () => {} })(model, context, {
+			sessionId: "session-xyz",
+			headers: { "Session-Id": "caller-wins" } as never,
+		});
+
+		expect((lastOptions().headers as Record<string, string>)["Session-Id"]).toBe("caller-wins");
+		expect((lastOptions().headers as Record<string, string>)["session-id"]).toBeUndefined();
+	});
+
 	it("chains a caller-supplied onPayload instead of replacing it", async () => {
 		const config = resolveConfig({ codexEnvelope: false });
 		const upstream = vi.fn(async (payload: unknown) => ({ ...(payload as object), upstream: true }));

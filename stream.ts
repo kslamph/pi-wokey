@@ -38,6 +38,19 @@ export interface WokeyStreamDeps {
 const processCacheKey = randomUUID();
 
 /**
+ * pi truncates `prompt_cache_key` to this length before sending it
+ * (`OPENAI_PROMPT_CACHE_KEY_MAX_LENGTH`, pi-ai `api/openai-prompt-cache.ts`). We mirror the
+ * clamp so the `session-id` header and the body field carry the identical string, which is
+ * what Codex does. Without it, a session id longer than 64 chars would disagree on the two.
+ */
+const PROMPT_CACHE_KEY_MAX_LENGTH = 64;
+
+function clampCacheKey(key: string): string {
+	const chars = Array.from(key);
+	return chars.length <= PROMPT_CACHE_KEY_MAX_LENGTH ? key : chars.slice(0, PROMPT_CACHE_KEY_MAX_LENGTH).join("");
+}
+
+/**
  * Shape the payload into the Codex Responses envelope. Only fills gaps — anything
  * pi already set (notably `reasoning`) is left untouched, so the thinking level
  * the user chose is never overwritten here.
@@ -84,7 +97,17 @@ export function createWokeyStream(deps: WokeyStreamDeps) {
 		const envelope = deps.config.codexEnvelope;
 		// One cache key per conversation: pi supplies the session id, so fall back
 		// to a process-wide key only when it is absent.
-		const cacheKey = options?.sessionId ?? processCacheKey;
+		const cacheKey = clampCacheKey(options?.sessionId ?? processCacheKey);
+
+		// Codex documents the affinity mechanism in its own source (codex-rs/core/src/client.rs:594):
+		// "ChatGPT derives cache affinity from the Responses session-id header" — and for the root
+		// agent it sends the prompt_cache_key *as* that header (client.rs:580-602). pi's
+		// openai-responses adapter cannot do this: it auto-detects the "openai" affinity format for
+		// any non-OpenRouter baseUrl and emits `session_id` with an underscore
+		// (openai-responses.js:46-47,206), never the dash form codex sends. So the header the
+		// upstream is said to key on would otherwise be absent. Measured effect is unproven
+		// (see docs/wokey-cache-miss-report.md) — this mirrors codex, and is inert if ignored.
+		if (!Object.keys(headers).some((k) => k.toLowerCase() === "session-id")) headers["session-id"] = cacheKey;
 
 		return impl.streamSimple(model, context, {
 			...options,
