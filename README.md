@@ -25,6 +25,14 @@ outage or a verifier bug degrades into a notification instead of a dead session.
 
 ## Install
 
+### From npm (recommended)
+
+```bash
+pi packages install pi-wokey
+```
+
+### Local development
+
 ```bash
 cd ~/piext/pi-wokey-provider && npm install
 ```
@@ -32,34 +40,19 @@ cd ~/piext/pi-wokey-provider && npm install
 Register the package (absolute local path, in `~/.pi/agent/settings.json`):
 
 ```bash
-python3 - <<'EOF'
+python3 - <<'PY'
 import json, os
 p = os.path.expanduser('~/.pi/agent/settings.json')
 s = json.load(open(p))
 pkg = os.path.expanduser('~/piext/pi-wokey-provider')
 if pkg not in s['packages']:
-    s['packages'].append(pkg); json.dump(s, open(p,'w'), indent=2)
-EOF
+    s['packages'].append(pkg)
+    json.dump(s, open(p,'w'), indent=2)
+    print('added:', pkg)
+else:
+    print('already registered:', pkg)
+PY
 ```
-
-Set the key — either now, or later with `/wokey key <value>` inside pi:
-
-```bash
-python3 - <<'EOF'
-import json, os
-p = os.path.expanduser('~/.pi/agent/wokey.json')
-json.dump({"apiKey": "sk-..."}, open(p,'w'), indent=2); open(p,'a').write('\n')
-os.chmod(p, 0o600)
-EOF
-```
-
-Then:
-
-```bash
-pi --list-models                        # the 3 wokey models appear
-pi -p --model wokey/gpt-6-luna "hi"
-```
-
 ## Usage
 
 ### `/wokey`
@@ -67,10 +60,15 @@ pi -p --model wokey/gpt-6-luna "hi"
 `/wokey` opens a menu (arrow keys, enter to pick, esc to cancel). It loops, so you can
 do several things in one visit:
 
+![wokey TUI: the /wokey menu, the live model lineup, a verified exchange, then a failed one](docs/wokey-demo.gif)
+
+*The `/wokey` panels — a verified exchange, then a failed one (warn-only). Illustrative
+data.*
+
 | Menu item | What it does |
 |---|---|
 | **Status** | Verdict counters, masked key and which store it came from, pinned image measurement, expected upstream, probing mode, and the last exchange with every check. Press `r` to re-resolve the key and re-sync the catalog. |
-| **Models** | The lineup with prices, context window, and the exact thinking levels each model offers. |
+| **Models** | The lineup with current rates, context window, and the exact thinking levels each model offers. |
 | **Set API key** | Prompts for the key; writes both stores. |
 | **Unset API key** | Confirms, then removes the key from both stores. |
 
@@ -250,3 +248,9 @@ retains their headers unedited. See `LICENSE` and `NOTICE` for terms and attribu
 ## License
 
 Apache-2.0. See `LICENSE` and `NOTICE`.
+
+---
+
+**Note:** This extension is made for personal use and is not associated with wokey.ai in any way beyond being an ordinary user of the wokey service.
+
+The wokey platform provides multiple providers and many more models than are currently supported in this extension. I have intentionally integrated only the three models I personally use. If other developers are interested in adding support for other providers or additional models, they are welcome to integrate, run tests, and submit pull requests. I would be happy to merge contributions that make this extension more useful to others.

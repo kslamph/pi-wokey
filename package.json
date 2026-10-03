@@ -25,6 +25,7 @@
 		"models.ts",
 		"stream.ts",
 		"verify",
+		"docs",
 		"README.md",
 		"LICENSE",
 		"NOTICE"
