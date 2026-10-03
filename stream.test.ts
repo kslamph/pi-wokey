@@ -107,15 +107,18 @@ describe("wokey streamSimple wiring", () => {
 		expect(header).toBe(body);
 	});
 
-	it("does not overwrite a caller-supplied session-id header", () => {
+	it("matches pi's Codex headers and suppresses the generic underscore header", () => {
 		const config = resolveConfig();
 		createWokeyStream({ config, onReport: () => {} })(model, context, {
 			sessionId: "session-xyz",
-			headers: { "Session-Id": "caller-wins" } as never,
+			headers: { "Session-Id": "caller-wins", session_id: "generic-adapter" } as never,
 		});
 
-		expect((lastOptions().headers as Record<string, string>)["Session-Id"]).toBe("caller-wins");
-		expect((lastOptions().headers as Record<string, string>)["session-id"]).toBeUndefined();
+		const headers = lastOptions().headers as Record<string, string | null>;
+		expect(headers["session-id"]).toBe("session-xyz");
+		expect(headers["x-client-request-id"]).toBe("session-xyz");
+		expect(headers["session_id"]).toBeNull();
+		expect(headers["Session-Id"]).toBeUndefined();
 	});
 
 	it("chains a caller-supplied onPayload instead of replacing it", async () => {

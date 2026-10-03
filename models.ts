@@ -132,11 +132,19 @@ export function toModel(spec: WokeyModelSpec, config: WokeyConfig): Model<"opena
 		provider: PROVIDER_ID,
 		baseUrl: config.baseUrl,
 		input: ["text", "image"],
+		// `ModelCost` rates are USD per 1M tokens — the same unit as `spec`, and
+		// the unit pi's own catalog uses (models-store.json: openai gpt-6.1-sol is
+		// {"input":2,"output":10,"cacheRead":0.1,"cacheWrite":2.5}). pi-ai's
+		// calculateCost() divides by 1e6 itself when it turns these into dollars
+		// (pi-ai/dist/models.js), so they must NOT be pre-divided here — doing so
+		// made every recorded message cost 1e6x too small, and a cost readout
+		// rendered as $0.00000. The `/wokey models` price table is unaffected
+		// either way: it prints `spec` rates, not this block.
 		cost: {
-			input: spec.input / PER_MILLION,
-			output: spec.output / PER_MILLION,
-			cacheRead: spec.cacheRead / PER_MILLION,
-			cacheWrite: spec.cacheWrite / PER_MILLION,
+			input: spec.input,
+			output: spec.output,
+			cacheRead: spec.cacheRead,
+			cacheWrite: spec.cacheWrite,
 		},
 		reasoning: true,
 		thinkingLevelMap: thinkingLevelMapFor(spec.reasoningEfforts),

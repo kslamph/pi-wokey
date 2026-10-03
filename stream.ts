@@ -99,15 +99,19 @@ export function createWokeyStream(deps: WokeyStreamDeps) {
 		// to a process-wide key only when it is absent.
 		const cacheKey = clampCacheKey(options?.sessionId ?? processCacheKey);
 
-		// Codex documents the affinity mechanism in its own source (codex-rs/core/src/client.rs:594):
-		// "ChatGPT derives cache affinity from the Responses session-id header" — and for the root
-		// agent it sends the prompt_cache_key *as* that header (client.rs:580-602). pi's
-		// openai-responses adapter cannot do this: it auto-detects the "openai" affinity format for
-		// any non-OpenRouter baseUrl and emits `session_id` with an underscore
-		// (openai-responses.js:46-47,206), never the dash form codex sends. So the header the
-		// upstream is said to key on would otherwise be absent. Measured effect is unproven
-		// (see docs/wokey-cache-miss-report.md) — this mirrors codex, and is inert if ignored.
-		if (!Object.keys(headers).some((k) => k.toLowerCase() === "session-id")) headers["session-id"] = cacheKey;
+		// Match pi's `openai-codex-responses` header behavior. Its generic
+		// `openai-responses` adapter would otherwise add `session_id` (underscore),
+		// while Codex-compatible Responses uses the dashed `session-id` header.
+		// Pi has no public thread-id in SimpleStreamOptions, so use its own Codex
+		// provider's mapping: session-id and x-client-request-id both carry the
+		// session/cache key, with no fabricated thread-id.
+		for (const key of Object.keys(headers)) {
+			const lower = key.toLowerCase();
+			if (lower === "session-id" || lower === "session_id" || lower === "x-client-request-id") delete headers[key];
+		}
+		headers["session_id"] = null; // suppress pi-ai's generic adapter default
+		headers["session-id"] = cacheKey;
+		headers["x-client-request-id"] = cacheKey;
 
 		return impl.streamSimple(model, context, {
 			...options,

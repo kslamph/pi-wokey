@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { GPT_MODELS, activeModels, activeSpecs, refreshFromCatalog } from "./models.ts";
+import { calculateCost } from "@earendil-works/pi-ai";
+import { GPT_MODELS, activeModels, activeSpecs, refreshFromCatalog, toModel } from "./models.ts";
 import { DEFAULT_CONFIG } from "./config.ts";
 
 const snapshot = () => GPT_MODELS.map((m) => ({ ...m }));
@@ -58,6 +59,43 @@ describe("catalog reconciliation", () => {
 	it("survives a malformed catalog", () => {
 		expect(refreshFromCatalog(null).warnings).toHaveLength(1);
 		expect(refreshFromCatalog({ data: "nope" }).warnings).toHaveLength(1);
+	});
+});
+
+describe("cost rates", () => {
+	// Regression guard. `ModelCost` rates are USD per 1M tokens — pi-ai's
+	// calculateCost() does the /1e6 itself. toModel() used to pre-divide as
+	// well, so every message recorded cost 1e6x too small and any cost
+	// readout showed $0.00000. Pin the unit, then pin the money.
+	it("declares rates in USD per 1M, the unit pi's catalog uses", () => {
+		const sol = toModel(activeSpecs().find((s) => s.id === "gpt-6.1-sol")!, DEFAULT_CONFIG);
+		expect(sol.cost).toEqual({ input: 0.18, output: 0.9, cacheRead: 0.009, cacheWrite: 0.225 });
+	});
+
+	it("turns a real message's usage into the right number of dollars", () => {
+		const sol = toModel(activeSpecs().find((s) => s.id === "gpt-6.1-sol")!, DEFAULT_CONFIG);
+		const usage = {
+			input: 556,
+			output: 302,
+			cacheRead: 181_760,
+			cacheWrite: 0,
+			totalTokens: 182_618,
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+		};
+		calculateCost(sol as never, usage);
+		// 0.18*556 + 0.9*302 + 0.009*181760, all per 1M.
+		expect(usage.cost.total).toBeCloseTo(0.00200772, 10);
+		expect(usage.cost.total).toBeGreaterThan(0.01 / 100); // not a 1e-6 artifact
+	});
+
+	it("keeps every active row's rates equal to its spec rates", () => {
+		for (const spec of activeSpecs()) {
+			const model = toModel(spec, DEFAULT_CONFIG);
+			expect(model.cost.input).toBe(spec.input);
+			expect(model.cost.output).toBe(spec.output);
+			expect(model.cost.cacheRead).toBe(spec.cacheRead);
+			expect(model.cost.cacheWrite).toBe(spec.cacheWrite);
+		}
 	});
 });
 
