@@ -83,14 +83,13 @@ export interface WokeyConfig {
 	 * signed hash, and the served model is read from the integrity-bound response body.
 	 */
 	requestBinding: "verify" | "unavailable";
-	/** Header that asks the relay to emit the proof. */
-	proofHeaderName: string;
 	/**
-	 * Value for that header. Undefined = relay default = a trailing
+	 * Header that asks the relay to select a proof transport. The provider strips
+	 * it from outgoing requests and relies on the relay default: a trailing
 	 * `event: tee.proof` SSE record, which the probe strips before pi sees it.
-	 * Only set "multipart" if you have a reason to.
+	 * Multipart proof delivery is deliberately not negotiable through this provider.
 	 */
-	proofMode?: string;
+	proofHeaderName: string;
 	/**
 	 * Shape each request into the Codex Responses envelope the upstream backend
 	 * expects (`store:false`, `instructions`, `text.verbosity`,

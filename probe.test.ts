@@ -7,7 +7,7 @@
  * proof-record handling, the byte-exactness of the request capture, the
  * host/path gates, and — most importantly — that the PCR0 gate cannot be
  * satisfied by the proof's own self-declared value. The byte-level delivery
- * invariants (relay keepalives, non-streaming bodies, multipart envelopes) are
+ * invariants (relay keepalives, non-streaming bodies, unnegotiated transports) are
  * covered by the end-to-end suite in probe.e2e.test.ts.
  */
 

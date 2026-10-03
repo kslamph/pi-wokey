@@ -360,6 +360,12 @@ handling and usage accounting. The trailing `event: tee.proof` record is strippe
 pi sees it (same as upstream's own tee-verify-proxy), so the adapter never meets an SSE
 event it doesn't know.
 
+The proof transport is fixed to that default SSE record. The provider strips any
+`x-wokey-tee-proof-mode` header from the request, so a non-SSE (multipart) delivery
+cannot be negotiated — pi's streaming adapter reads every response as SSE and would not
+be able to consume one, and an unexpected multipart envelope is reported `unproven`
+rather than silently unwrapped.
+
 ## Vendored code
 
 `verify/signing.ts`, `verify/verify-attestation-cose.mjs` and `verify/tee-verify-core.ts`

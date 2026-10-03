@@ -72,9 +72,13 @@ export function createWokeyStream(deps: WokeyStreamDeps) {
 		const impl = resolveImpl(model);
 
 		const headers: Record<string, string | null> = { ...options?.headers };
-		// Left unset by default: the relay's default proof delivery is the trailing
-		// `event: tee.proof` SSE record, which the probe strips before pi sees it.
-		if (deps.config.proofMode) headers[deps.config.proofHeaderName] = deps.config.proofMode;
+		// The provider drives the proof transport, and the only delivery the probe can
+		// verify is the relay's default trailing `event: tee.proof` SSE record. Drop a
+		// caller-supplied proof-mode header so the relay cannot be asked for a transport
+		// (e.g. multipart) that pi's streaming adapter cannot consume.
+		for (const key of Object.keys(headers)) {
+			if (key.toLowerCase() === deps.config.proofHeaderName.toLowerCase()) delete headers[key];
+		}
 
 		const upstream = options?.onPayload;
 		const envelope = deps.config.codexEnvelope;

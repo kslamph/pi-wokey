@@ -22,9 +22,7 @@
 
 import { Buffer } from "node:buffer";
 import {
-	parseTeeProofCapture,
 	parseTeeProofEvent,
-	parseTeeProofMultipartResponse,
 	verifyTeeExchange,
 	TEE_PROOF_EVENT,
 	type AttestationVerifier,
@@ -121,26 +119,16 @@ async function drain(stream: ReadableStream<Uint8Array>): Promise<Buffer> {
 
 /**
  * Normalize the bytes the client actually received exactly as the vendored
- * verifier normalizes the wire body: extract the upstream response part from a
- * multipart envelope, and strip hash-gated relay transport keepalives. Skipping
- * this makes every stream that carries a keepalive hash differently from the
- * signature — a false failure. Returns the number of stripped keepalives so the
- * report can say which branch applied.
+ * verifier normalizes the wire body: strip hash-gated relay transport
+ * keepalives. Skipping this makes every stream that carries a keepalive hash
+ * differently from the signature — a false failure. Returns the number of
+ * stripped keepalives so the report can say which branch applied.
  */
-function normalizeDeliveredBody(
-	clientBytes: Buffer,
-	proof: TeeProofWire,
-	contentType: string | undefined,
-): { body: Buffer; strippedKeepalives: number } {
-	// Multipart envelopes carry the response part inline; extract it. Do NOT run
-	// the SSE extractor on the delivered bytes: a forged mid-stream marker must
-	// stay in the hashed prefix and fail the run, not be treated as a boundary.
-	const multipart = parseTeeProofMultipartResponse(clientBytes, contentType);
-	if (multipart?.proof) {
-		return { body: multipart.body, strippedKeepalives: multipart.ignoredTransportKeepaliveCount ?? 0 };
-	}
-	// SSE: the proof record was stripped from the client stream, so re-attach the
-	// proof we already parsed to unlock the vendored hash-gated keepalive stripper.
+function normalizeDeliveredBody(clientBytes: Buffer, proof: TeeProofWire): { body: Buffer; strippedKeepalives: number } {
+	// The delivered bytes are SSE (the only transport this provider negotiates),
+	// with the proof record already stripped. Re-attach the proof we parsed so the
+	// vendored parser locates the genuine trailing record; a forged marker already
+	// inside clientBytes stays in the hashed prefix and fails the run.
 	const reattached = Buffer.concat([
 		clientBytes,
 		Buffer.from(`event: ${TEE_PROOF_EVENT}\ndata: ${JSON.stringify(proof)}\n\n`, "utf8"),
@@ -231,7 +219,6 @@ export interface VerifyInput {
 	clientBytes?: Buffer;
 	/** Bytes we sent, if we managed to capture them. */
 	requestBytes?: Buffer;
-	contentType?: string;
 	/** Model id we asked for, so the served model can be checked against it. */
 	expectedModel?: string;
 	/** Test seam: swap the hardware-attestation verifier for a stub. */
@@ -268,7 +255,7 @@ function shortReason(detail: string): string {
 }
 
 export function verifyExchange(input: VerifyInput, config: WokeyConfig): { report: ProofVerdict } {
-	const parsed = parseTeeProofCapture(input.wireBytes, input.contentType);
+	const parsed = parseTeeProofEvent(input.wireBytes);
 	const proof: TeeProofWire | undefined = parsed.proof;
 
 	if (!proof) {
@@ -284,9 +271,9 @@ export function verifyExchange(input: VerifyInput, config: WokeyConfig): { repor
 	}
 
 	// Hash the delivered bytes with the same normalizer the wire body goes through,
-	// so relay keepalives/multipart framing are not mistaken for edits.
+	// so relay keepalives are not mistaken for edits.
 	const delivered = input.clientBytes
-		? normalizeDeliveredBody(input.clientBytes, proof, input.contentType)
+		? normalizeDeliveredBody(input.clientBytes, proof)
 		: { body: parsed.body, strippedKeepalives: 0 };
 
 	const result = verifyTeeExchange(
@@ -401,7 +388,7 @@ export function createProbingFetch(deps: ProbeDeps): typeof globalThis.fetch {
 				let report: ProofVerdict;
 				try {
 					report = verifyExchange(
-						{ wireBytes, clientBytes, requestBytes, contentType, expectedModel: deps.expectedModel, attestationVerifier: deps.attestationVerifier },
+						{ wireBytes, clientBytes, requestBytes, expectedModel: deps.expectedModel, attestationVerifier: deps.attestationVerifier },
 						deps.config,
 					).report;
 				} catch (error) {
@@ -427,7 +414,7 @@ export function createProbingFetch(deps: ProbeDeps): typeof globalThis.fetch {
 		// the bytes the signature covers.
 		if (!response.body || !/text\/event-stream/i.test(contentType)) {
 			const bytes = Buffer.from(await response.arrayBuffer());
-			const parsedBytes = parseTeeProofCapture(bytes, contentType);
+			const parsedBytes = parseTeeProofEvent(bytes);
 			const delivered = parsedBytes.proof ? parsedBytes.body : bytes;
 			finish(bytes, delivered);
 			return new Response(delivered, {
