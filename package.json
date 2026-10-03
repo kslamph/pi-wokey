@@ -1,6 +1,6 @@
 {
 	"name": "pi-wokey",
-	"version": "0.2.0",
+	"version": "0.3.0",
 	"description": "pi provider for wokey.ai GPT models, verifying every response against its Proof-of-Observation TEE statement (warn-only)",
 	"keywords": [
 		"pi-package",
