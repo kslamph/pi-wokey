@@ -48,7 +48,7 @@ MARK.failed = "\u2717"; // ballot x
 MARK.unproven = "\u25b3"; // hollow triangle
 
 // Raw terminal key sequences, as `handleInput` receives them from pi.
-const KEYS = { up: "\x1b[A", down: "\x1b[B", enter: "\r", escape: "\x1b" };
+const KEYS = { up: "\x1b[A", down: "\x1b[B", enter: "\r", escape: "\x1b", more: "m" };
 
 // Terminal grid. Every frame renders into the same box at the same offset, so
 // the GIF reads as one window whose content changes in place, not as text that
@@ -58,7 +58,7 @@ const FONT = "JetBrainsMono Nerd Font";
 const FONT_SIZE = 13000; // pango units (thousandths of a point)
 const BG = "#000000";
 const CANVAS_W = 1088;
-const CANVAS_H = 600;
+const CANVAS_H = 624; // 25 rows: the tallest frame is the expanded status panel
 const PAD_X = 24;
 const PAD_Y = 12;
 const FRAME_DELAY_MS = 2500; // every frame holds for the same beat
@@ -180,6 +180,10 @@ function deps(signatureOk) {
 		stats: () => ({ verified: 12, gapped: 1, failed: signatureOk ? 0 : 1, unproven: 0 }),
 		last: () => r,
 		refresh: async () => {},
+		// The demo must not touch the real account, so the balance is synthetic
+		// and the fetch is a no-op — the panel code path is still the real one.
+		balance: () => ({ availableUsd: 24.5, reservedUsd: 0 }),
+		syncBalance: async () => {},
 	};
 }
 
@@ -216,7 +220,9 @@ const render = (component) => component.render(WIDTH);
 // is byte-identical in geometry across the whole animation.
 const frames = [];
 const push = (lines, delay = FRAME_DELAY_MS) => {
-	if (lines.length > ROWS) console.warn(`frame overflows the grid: ${lines.length} > ${ROWS} lines (clipping)`);
+	// Fail loudly rather than clip: a silently cut-off panel in the README
+	// would misrepresent what the status view actually shows.
+	if (lines.length > ROWS) throw new Error(`frame overflows the grid: ${lines.length} > ${ROWS} lines — raise CANVAS_H`);
 	const block = lines.slice(0, ROWS);
 	while (block.length < ROWS) block.push("");
 	frames.push({ lines: block, delay });
@@ -240,6 +246,12 @@ const push = (lines, delay = FRAME_DELAY_MS) => {
 	push(render(menu2));
 	menu2.handleInput(KEYS.enter);
 	const verified = await h.next();
+	push(render(verified));
+	// Fold the trust anchors out with `m`, then back in again: the same panel,
+	// so the only thing that changes between these frames is the disclosure.
+	verified.handleInput(KEYS.more);
+	push(render(verified));
+	verified.handleInput(KEYS.more);
 	push(render(verified));
 }
 // Act 2 — the same panel after a failed verification.

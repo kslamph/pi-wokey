@@ -16,6 +16,7 @@
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { PROVIDER_ID, resolveApiKey, resolveConfig, type WokeyConfig } from "./config.ts";
+import { fetchBalance, type BalanceInfo } from "./balance.ts";
 import { activeModels, refreshFromCatalog } from "./models.ts";
 import { createWokeyStream } from "./stream.ts";
 import type { ProofReport } from "./verify/probe.ts";
@@ -37,6 +38,8 @@ function freshStats(): Stats {
 export default function wokeyProvider(pi: ExtensionAPI, config: WokeyConfig = resolveConfig()): void {
 	let stats = freshStats();
 	let last: ProofReport | undefined;
+	/** Last balance read from the relay; `undefined` until one succeeds. */
+	let balance: BalanceInfo | undefined;
 	let unprovenWarned = false;
 	let ui: { notify(message: string, level?: string): void } | undefined;
 
@@ -95,6 +98,8 @@ export default function wokeyProvider(pi: ExtensionAPI, config: WokeyConfig = re
 					stats: () => ({ ...stats }),
 					last: () => last,
 					refresh: () => syncCatalog(),
+					balance: () => balance,
+					syncBalance: () => syncBalance(),
 				},
 				(Array.isArray(args) ? args : String(args ?? "").split(/\s+/)).map(String),
 				ctx as CommandContext,
@@ -133,15 +138,28 @@ export default function wokeyProvider(pi: ExtensionAPI, config: WokeyConfig = re
 		}
 	}
 
+	/**
+	 * Best-effort account-balance read for the status panel. Failures leave the
+	 * previous value (or none) in place: a balance lookup that fails must not
+	 * blank the panel or stall it, and a stale number beats no number.
+	 */
+	async function syncBalance(): Promise<void> {
+		const next = await fetchBalance(config, resolveApiKey());
+		if (next) balance = next;
+	}
+
 	// Expose for tests / debugging.
 	(pi as unknown as { __wokey?: unknown }).__wokey = {
 		stats: () => ({ ...stats }),
 		config: () => ({ ...config }),
 		last: () => last,
 		syncCatalog,
+		syncBalance,
+		balance: () => balance,
 		reset: () => {
 			stats = freshStats();
 			last = undefined;
+			balance = undefined;
 		},
 	};
 }

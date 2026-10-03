@@ -58,12 +58,12 @@ visit:
 
 ![wokey TUI: the /wokey menu, the live model lineup, a verified exchange, then a failed one](docs/wokey-demo.gif)
 
-*The `/wokey` panels — a verified exchange, then a failed one (warn-only). Illustrative
-data.*
+*The `/wokey` panels — a verified exchange, folded and unfolded with `m`, then a failed
+one (warn-only). Illustrative data.*
 
 | Menu item | What it shows you |
 |---|---|
-| **Status** | Verdict counters, your masked key and which store it came from, the pinned image measurement, the expected upstream, and the last exchange with every individual check. Press `r` to refresh the key and catalog. |
+| **Status** | How much balance you have left, the verdict counters, your masked key and which store it came from, and the last exchange with every individual check. Press `m` to fold out the trust details — the pinned image measurement, the expected upstream, and the probing and settings state. Press `r` to refresh. |
 | **Models** | The lineup with current rates, context window, and the exact thinking levels each model supports. |
 | **Set API key** | Prompts for a key and writes both stores. |
 | **Unset API key** | Confirms, then removes the key from both stores. |
@@ -90,6 +90,7 @@ for where keys are looked up and what else you can change.
 | **Warn-only, never blocking** | A failed or missing proof is reported, but your reply is always delivered. A relay outage degrades into a notice, not a dead session. |
 | **Silent by default** | No popups, no prompts, no flags to set. `/wokey status` is there when you want the detail. |
 | **Live catalog sync** | Context windows and rates are re-read from wokey on every startup, so the numbers you see are current. |
+| **Balance at a glance** | `/wokey` reads what you have left to spend from wokey when you open it, so you never have to leave the terminal to check. |
 | **Native TUI panels** | `/wokey` renders as real pi panels, not a wall of text. |
 
 ## Reading the verdict
@@ -103,9 +104,9 @@ Every exchange gets exactly one of four labels.
 | ❌ `failed` | Attestation, signature, hashes, or the upstream host/path did not match. Treat the response as untrusted. |
 | ⚠️ `unproven` | No proof record was present, so there was nothing to verify. |
 
-`/wokey` shows the running counters and the full check list for the last exchange.
-Anything that is not `verified` is also mirrored to stderr, so you see it even in a
-headless run:
+`/wokey` shows the running counters, your remaining balance, and the full check list for
+the last exchange. Anything that is not `verified` is also mirrored to stderr, so you see it
+even in a headless run:
 
 ```
 [wokey] ❌ wokey verification failed — Response signature: received bytes do not match the signed hash — response was modified
@@ -249,6 +250,10 @@ verify.
 
 **`402 insufficient_balance` everywhere.** Your key is fine — authentication passed.
 The relay bills before it generates, so no response and no proof ever exist to check.
+
+**The balance line shows `—`.** The balance could not be read: no key is set, the relay
+did not answer in time, or the reply was not one. Everything else in the panel still
+works, and `r` tries again.
 
 **`wrong_gateway_host`.** `baseUrl` is set to `wokey.ai` instead of `api.wokey.ai`.
 

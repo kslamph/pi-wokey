@@ -96,15 +96,17 @@ describe("config", () => {
 });
 
 describe("/wokey renderer", () => {
-	it("shows counters, masked key and both trust anchors", async () => {
+	it("shows counters, masked key, balance, and both trust anchors once expanded", async () => {
 		const { renderStatus } = await import("./tui.ts");
 		const text = renderStatus(
 			resolveConfig(),
 			{ verified: 3, gapped: 1, failed: 0, unproven: 0 },
 			undefined,
+			{ balance: { availableUsd: 10.787384, reservedUsd: 0 }, expanded: true },
 		);
 		expect(text).toContain("wokey.ai ·");
 		expect(text).toContain("key ");
+		expect(text).toContain("$10.79"); // live balance, cents always shown
 		expect(text).toContain("437cbab8c2e5dd11");
 		expect(text).toContain("chatgpt.com");
 		expect(text).toContain("No response verified yet");
