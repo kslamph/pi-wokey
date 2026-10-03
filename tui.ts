@@ -8,6 +8,7 @@
 
 import { getSupportedThinkingLevels } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { Key, matchesKey, truncateToWidth } from "@earendil-works/pi-tui";
 import {
 	clearPiCredential,
 	loadSettings,
@@ -42,6 +43,8 @@ export interface MenuDeps {
 	config(): WokeyConfig;
 	stats(): MenuStats;
 	last(): ProofReport | undefined;
+	/** Re-resolve the key and re-sync the catalog; bound to `r` in the Status panel. */
+	refresh(): Promise<void>;
 }
 
 // ── renderers (pure, so they are trivially testable and reuseable headlessly) ──
@@ -91,15 +94,103 @@ export function renderModels(): string {
 		};
 	});
 	const out = [
-		`${"model".padEnd(13)}  ${"in/1M".padStart(7)}  ${"out/1M".padStart(8)}  ${"ctx".padEnd(6)}thinking levels`,
+		`${"model".padEnd(13)}  ${"in/1M".padEnd(7)}  ${"out/1M".padEnd(8)}  ${"ctx".padEnd(6)}thinking levels`,
 		"-".repeat(78),
 	];
 	for (const r of rows) {
-		out.push(`${r.id.padEnd(13)}  ${r.in.padStart(7)}  ${r.out.padStart(8)}  ${r.ctx.padEnd(6)}${r.levels}`);
+		out.push(`${r.id.padEnd(13)}  ${r.in.padEnd(7)}  ${r.out.padEnd(8)}  ${r.ctx.padEnd(6)}${r.levels}`);
 	}
 	out.push("", `Select one with /model, e.g.  /model wokey/gpt-6-luna:high`);
 	out.push("Rates are re-read from GET /v1/models on every startup (wokey uses dynamic_discount).");
 	return out.join("\n");
+}
+
+// ── in-TUI panels (ctx.ui.custom, same visual language as pi-free-provider) ────
+
+/** Compact single-select rendered inside the TUI. */
+function selectOne(ctx: CommandContext, title: string, items: { value: string; label: string }[]): Promise<string | null> {
+	if (items.length === 0) return Promise.resolve(null);
+	return ctx.ui.custom<string | null>((tui, theme, _kb, done) => {
+		let cursor = 0;
+		return {
+			render(width: number) {
+				const w = Math.max(10, width);
+				const lines: string[] = [];
+				const add = (line = "") => lines.push(truncateToWidth(line, w));
+				add(theme.fg("accent", "─".repeat(w)));
+				add(` ${theme.fg("accent", theme.bold(title))}`);
+				add();
+				items.forEach((item, i) => {
+					const pointer = i === cursor ? theme.fg("accent", "❯ ") : "  ";
+					add(` ${pointer}${item.label}`);
+				});
+				add();
+				add(` ${theme.fg("text", "↑/↓ move · enter select · esc cancel")}`);
+				return lines;
+			},
+			invalidate() {},
+			handleInput(data: string) {
+				if (matchesKey(data, Key.up)) cursor = Math.max(0, cursor - 1);
+				else if (matchesKey(data, Key.down)) cursor = Math.min(items.length - 1, cursor + 1);
+				else if (matchesKey(data, Key.return)) done(items[cursor]?.value ?? null);
+				else if (matchesKey(data, Key.escape)) done(null);
+				tui.requestRender();
+			},
+		};
+	});
+}
+
+/**
+ * Read-only info panel. `getBody` is re-evaluated on every render, so the panel
+ * shows fresh state once `actions.onRefresh` (bound to the `r` key) has run.
+ */
+function infoPanel(ctx: CommandContext, title: string, getBody: () => string, actions?: { onRefresh?: () => Promise<void> }): Promise<void> {
+	return ctx.ui.custom<void>((tui, theme, _kb, done) => {
+		let refreshing = false;
+		return {
+			render(width: number) {
+				const w = Math.max(10, width);
+				const lines: string[] = [];
+				const add = (line = "") => lines.push(truncateToWidth(line, w));
+				add(theme.fg("accent", "─".repeat(w)));
+				add(` ${theme.fg("accent", theme.bold(title))}`);
+				add();
+				for (const line of getBody().split("\n")) add(` ${line}`);
+				add();
+				if (refreshing) add(` ${theme.fg("text", "refreshing…")}`);
+				else add(` ${theme.fg("text", actions?.onRefresh ? "enter/esc close · r refresh now" : "enter/esc close")}`);
+				return lines;
+			},
+			invalidate() {},
+			handleInput(data: string) {
+				if (matchesKey(data, Key.return) || matchesKey(data, Key.escape)) {
+					done();
+					return;
+				}
+				if (actions?.onRefresh && (data === "r" || data === "R") && !refreshing) {
+					refreshing = true;
+					tui.requestRender();
+					void actions
+						.onRefresh()
+						.catch(() => undefined)
+						.finally(() => {
+							refreshing = false;
+							tui.requestRender();
+						});
+					return;
+				}
+				tui.requestRender();
+			},
+		};
+	});
+}
+
+function openStatus(ctx: CommandContext, deps: MenuDeps): Promise<void> {
+	return infoPanel(ctx, "wokey.ai · status", () => renderStatus(deps.config(), deps.stats(), deps.last()), { onRefresh: deps.refresh });
+}
+
+function openModels(ctx: CommandContext): Promise<void> {
+	return infoPanel(ctx, "wokey.ai · models", () => renderModels());
 }
 
 // ── actions ───────────────────────────────────────────────────────────────────
@@ -144,11 +235,13 @@ async function doUnsetKey(ctx: CommandContext): Promise<void> {
 
 // ── entry point ───────────────────────────────────────────────────────────────
 
-const ACTIONS = [
-	"Status — verification counters, key, trust anchors",
-	"Models — lineup, prices, thinking levels",
-	"Set API key",
-	"Unset API key",
+const USAGE = "usage: /wokey  ·  /wokey status  ·  /wokey models  ·  /wokey key <value>  ·  /wokey unset";
+
+const MENU = [
+	{ value: "status", label: "Status — verification counters, key, trust anchors" },
+	{ value: "models", label: "Models — lineup, prices, thinking levels" },
+	{ value: "key", label: "Set API key" },
+	{ value: "unset", label: "Unset API key" },
 ] as const;
 
 export async function runMenu(deps: MenuDeps, args: string[], ctx: CommandContext): Promise<void> {
@@ -160,13 +253,16 @@ export async function runMenu(deps: MenuDeps, args: string[], ctx: CommandContex
 		if (!ctx.hasUI) process.stderr.write(`${text}\n`);
 	};
 
-	// Subcommands stay available for scripting and headless runs.
-	if (verb === "status" || (verb === "" && !ctx.hasUI)) {
-		show(renderStatus(deps.config(), deps.stats(), deps.last()));
+	// Subcommands stay available for scripting and headless runs; with a UI the
+	// info views open as in-TUI panels instead of toasts.
+	if (verb === "status") {
+		if (ctx.hasUI) await openStatus(ctx, deps);
+		else show(renderStatus(deps.config(), deps.stats(), deps.last()));
 		return;
 	}
 	if (verb === "models" || verb === "model" || verb === "list") {
-		show(renderModels());
+		if (ctx.hasUI) await openModels(ctx);
+		else show(renderModels());
 		return;
 	}
 	if (verb === "key" && inline) {
@@ -186,11 +282,11 @@ export async function runMenu(deps: MenuDeps, args: string[], ctx: CommandContex
 		return;
 	}
 	if (verb === "help" || verb === "?") {
-		show("usage: /wokey  ·  /wokey status  ·  /wokey models  ·  /wokey key <value>  ·  /wokey unset");
+		show(USAGE);
 		return;
 	}
 	if (verb) {
-		show("usage: /wokey  ·  /wokey status  ·  /wokey models  ·  /wokey key <value>  ·  /wokey unset");
+		show(USAGE);
 		return;
 	}
 	if (!ctx.hasUI) {
@@ -199,16 +295,11 @@ export async function runMenu(deps: MenuDeps, args: string[], ctx: CommandContex
 	}
 
 	for (;;) {
-		const choice = await ctx.ui.select("wokey.ai", [...ACTIONS]);
-		if (!choice) return; // cancelled
-		if (choice === ACTIONS[0]) {
-			show(renderStatus(deps.config(), deps.stats(), deps.last()));
-		} else if (choice === ACTIONS[1]) {
-			show(renderModels());
-		} else if (choice === ACTIONS[2]) {
-			await doSetKey(ctx);
-		} else if (choice === ACTIONS[3]) {
-			await doUnsetKey(ctx);
-		}
+		const choice = await selectOne(ctx, "wokey.ai", [...MENU]);
+		if (choice === null) return; // cancelled
+		if (choice === "status") await openStatus(ctx, deps);
+		else if (choice === "models") await openModels(ctx);
+		else if (choice === "key") await doSetKey(ctx);
+		else if (choice === "unset") await doUnsetKey(ctx);
 	}
 }

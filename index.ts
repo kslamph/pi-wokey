@@ -94,6 +94,7 @@ export default function wokeyProvider(pi: ExtensionAPI, config: WokeyConfig = re
 					config: () => config,
 					stats: () => ({ ...stats }),
 					last: () => last,
+					refresh: () => syncCatalog(),
 				},
 				(Array.isArray(args) ? args : String(args ?? "").split(/\s+/)).map(String),
 				ctx as CommandContext,
