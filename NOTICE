@@ -1,0 +1,40 @@
+pi-wokey-provider
+Copyright 2026 kslamph
+
+This product includes software developed at third-party projects.
+
+--------------------------------------------------------------------------------
+focuxdot/proof-of-observation
+https://github.com/focuxdot/proof-of-observation
+Vendored at commit 4bb11f36370ca5d574310882e0e6aff30c424287
+--------------------------------------------------------------------------------
+
+Files vendored verbatim:
+
+  verify/signing.ts
+  verify/tee-verify-core.ts
+  verify/verify-attestation-cose.mjs
+
+Upstream is dual-licensed under the MIT License and the Apache License,
+Version 2.0. This distribution exercises the Apache-2.0 option for every
+vendored file. The upstream file headers are retained verbatim, as required
+by Apache-2.0 section 4(c); they have not been edited.
+
+The vendored files hold the security-critical signing-statement builder, the
+COSE/P-384 to AWS Nitro root verifier, and the proof wire parser. They are
+byte-identical to upstream and carry a "do not hand-edit" marker. Where a
+vendored file was originally distributed under the MIT option, MIT permits
+redistribution under other terms provided its notice is retained, which the
+verbatim headers do.
+
+Modifications to vendored files, if any are ever made, must be marked
+prominently per Apache-2.0 section 4(b) and recorded here.
+
+--------------------------------------------------------------------------------
+Trademarks
+--------------------------------------------------------------------------------
+
+"Proof-of-Observation", wokey.ai, ChatGPT, Codex, OpenAI, AWS and Nitro Enclaves
+are the property of their respective owners and are used here only to identify
+the technologies this software interoperates with. No affiliation or endorsement
+is implied. See section 6 of the License.

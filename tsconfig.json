@@ -1,0 +1,17 @@
+{
+	"compilerOptions": {
+		"target": "ES2023",
+		"module": "NodeNext",
+		"moduleResolution": "NodeNext",
+		"lib": ["ES2023"],
+		"types": ["node"],
+		"strict": true,
+		"noUncheckedIndexedAccess": true,
+		"verbatimModuleSyntax": true,
+		"allowImportingTsExtensions": true,
+		"noEmit": true,
+		"skipLibCheck": true
+	},
+	"include": ["*.ts", "sources/**/*.ts"],
+	"exclude": ["test-fixtures", "node_modules", "verify/tee-verify-core.ts", "verify/signing.ts", "verify/verify-attestation-cose.mjs"]
+}

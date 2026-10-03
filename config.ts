@@ -1,0 +1,284 @@
+import { chmodSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { dirname, join } from "node:path";
+
+/**
+ * Configuration + trust anchors for the wokey.ai provider.
+ *
+ * ── The one thing that matters here ───────────────────────────────────────────
+ * `EXPECTED_PCR0` is the audited enclave measurement. It is a hardcoded constant
+ * and is NEVER read from a proof, a response header, or the relay's website.
+ * That is the single defect that makes wokey's own browser verifier
+ * (`focuxdot/proof-of-observation` docs/tee-verify.html) pass vacuously: its
+ * `expectedPcr0FromObject()` falls back to `proof.pcr0`, so the value under test
+ * is adopted from the artifact being judged.
+ *
+ * The value below is the one published in the project's `docs/tee-reproducible-build.md`
+ * for measured revision 03fe2a3eb6d05e1ec94f7f52ac0521d42560a731. It is still an
+ * *operator-published* value, so it inherits trust in the operator (spec §10.6).
+ * See README.md §Trust model for how to replace it with a value you derived
+ * yourself from a reproducible build.
+ */
+
+export interface WokeyConfig {
+	/**
+	 * Relay base URL.
+	 *
+	 * Must be `https://api.wokey.ai/v1`. The bare `wokey.ai` host is the website
+	 * and rejects API traffic with `wrong_gateway_host` (verified 2026-10-03).
+	 */
+	baseUrl: string;
+	/**
+	 * Adapter to use.
+	 *
+	 * `openai-responses`, deliberately NOT `openai-codex-responses`. The codex
+	 * adapter authenticates as ChatGPT itself: it parses the key as a JWT for
+	 * `chatgpt_account_id` and sets `chatgpt-account-id` / `originator` headers. A
+	 * wokey API key is not a JWT, so it dies with "Failed to extract accountId from
+	 * token" — and those headers would be a lie here, since wokey's gateway supplies
+	 * its own subscription credentials. The Codex *envelope* is applied separately,
+	 * see `codexEnvelope`.
+	 */
+	api: "openai-responses" | "openai-completions";
+	/**
+	 * The audited enclave measurement to compare against. Hardcoded on purpose —
+	 * see the file header. Empty string disables the PCR0 gate (everything else
+	 * still runs, and the report says so).
+	 */
+	expectedPcr0: string;
+	/**
+	 * Signed upstream host that must match for a response to count as official.
+	 *
+	 * Measured 2026-10-03 against live gpt-6-luna and gpt-6-sol: both sign
+	 * `chatgpt.com`, NOT `api.openai.com`. Wokey serves the GPT lineup from a paid
+	 * ChatGPT/Codex subscription via `/backend-api/codex/responses` — consistent with
+	 * its pricing page ("from model providers' official APIs *and paid subscriptions*").
+	 * These are not OpenAI API calls.
+	 */
+	expectedHost: string; // convenience alias for expectedHosts[0]; kept for the env override
+	/**
+	 * Signed upstream hosts that are acceptable. Normally exactly one.
+	 *
+	 * Add a second entry only after observing a real proof from that route (see README
+	 * §Adding an upstream). A host is never pre-approved on the strength of a doc claim:
+	 * every host here has been measured, and each is a blocking check, so an unexpected
+	 * route fails loudly and tells you exactly what to look at before you widen it.
+	 *
+	 * Accepting an extra host does not weaken anything else — attestation to the AWS
+	 * Nitro root, the pinned PCR0, the nonce, the response signature and the body hash
+	 * must all still verify. It only stops the route change itself from being flagged.
+	 */
+	expectedHosts: string[];
+	/** Signed upstream paths that are acceptable. */
+	expectedPaths: string[];
+	/**
+	 * Whether byte-exact request binding is achievable through this relay.
+	 *
+	 * "unavailable": wokey rewrites the request body before the enclave sees it, so
+	 * `request_body_sha256` commits to *its* body, never yours. Measured: the rewrite is
+	 * deterministic (byte-identical input → identical signed hash) and order-sensitive,
+	 * but no client-side serialisation reproduces it. The check is then reported as a
+	 * known gap rather than a failure, and the verdict becomes "verified-with-gaps".
+	 * Prompt integrity is still covered indirectly: changing the prompt text changes the
+	 * signed hash, and the served model is read from the integrity-bound response body.
+	 */
+	requestBinding: "verify" | "unavailable";
+	/** Header that asks the relay to emit the proof. */
+	proofHeaderName: string;
+	/**
+	 * Value for that header. Undefined = relay default = a trailing
+	 * `event: tee.proof` SSE record, which the probe strips before pi sees it.
+	 * Only set "multipart" if you have a reason to.
+	 */
+	proofMode?: string;
+	/**
+	 * Shape each request into the Codex Responses envelope the upstream backend
+	 * expects (`store:false`, `instructions`, `text.verbosity`,
+	 * `include:["reasoning.encrypted_content"]`, `prompt_cache_key`, `tool_choice`,
+	 * `parallel_tool_calls`) — see `applyCodexEnvelope` in stream.ts.
+	 */
+	codexEnvelope: boolean;
+	/** Verify on every response (default true). */
+	verify: boolean;
+	/** Surface a notification when a response fails verification (default true). */
+	notifyOnFailure: boolean;
+}
+
+/** Published production PCR0 for measured revision 03fe2a3eb6d05e1ec94f7f52ac0521d42560a731. */
+export const PUBLISHED_PCR0 =
+	"437cbab8c2e5dd11a35ae5b062fe115623a013910b7c26b333e2b3af477944d630fb1dcd76fa9a9b1eefdf1d1021dec2";
+
+export const PROVIDER_ID = "wokey";
+
+export const DEFAULT_CONFIG: WokeyConfig = {
+	baseUrl: "https://api.wokey.ai/v1",
+	api: "openai-responses",
+	codexEnvelope: true,
+	expectedPcr0: PUBLISHED_PCR0,
+	expectedHost: "chatgpt.com",
+	expectedHosts: ["chatgpt.com"],
+	expectedPaths: ["/backend-api/codex/responses"],
+	requestBinding: "unavailable",
+	proofHeaderName: "x-wokey-tee-proof-mode",
+	verify: true,
+	notifyOnFailure: true,
+};
+
+// ── settings store ─────────────────────────────────────────────────────────────
+
+/**
+ * Settings and the API key live in `~/.pi/agent/wokey.json`, alongside `auth.json`
+ * and the other per-extension state files pi already keeps there. Nothing is read
+ * from the current working directory or a project-local `.env`, so the extension
+ * behaves identically no matter where pi was launched from.
+ */
+export function settingsPath(): string {
+	return process.env.WOKEY_CONFIG ?? join(homedir(), ".pi", "agent", "wokey.json");
+}
+
+export interface WokeySettings {
+	/** API key for api.wokey.ai. Optional — pi's own auth.json entry for `wokey` also works. */
+	apiKey?: string;
+	baseUrl?: string;
+	api?: WokeyConfig["api"];
+	expectedPcr0?: string;
+	expectedHost?: string;
+	expectedHosts?: string[];
+	expectedPaths?: string[];
+	codexEnvelope?: boolean;
+	verify?: boolean;
+	notifyOnFailure?: boolean;
+}
+
+export function loadSettings(): WokeySettings {
+	try {
+		const parsed = JSON.parse(readFileSync(settingsPath(), "utf8")) as unknown;
+		return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? (parsed as WokeySettings) : {};
+	} catch {
+		return {}; // missing or malformed is not fatal; defaults still work
+	}
+}
+
+export function saveSettings(settings: WokeySettings): void {
+	const path = settingsPath();
+	mkdirSync(dirname(path), { recursive: true });
+	writeFileSync(path, `${JSON.stringify(settings, null, 2)}\n`, { mode: 0o600 });
+	chmodSync(path, 0o600); // the file may hold an API key
+}
+
+/** Never print a whole key. */
+export function maskKey(key: string | undefined): string {
+	if (!key) return "(unset)";
+	if (key.length <= 10) return `${key.slice(0, 2)}…(${key.length})`;
+	return `${key.slice(0, 4)}…${key.slice(-4)} (${key.length} chars)`;
+}
+
+/**
+ * Resolution order: this extension's settings, then pi's credential store (which is
+ * what actually authenticates requests), then the environment.
+ *
+ * This sits on the per-request path (`stream.ts` falls back to it), so the two
+ * credential files are re-read only when their metadata (or the env fallback)
+ * changes. `/wokey key` rewrites the settings file, bumping its mtime and
+ * invalidating the cache naturally.
+ */
+let apiKeyCache: { key: string | undefined; stamp: string } | undefined;
+
+function mtimeMs(path: string): number {
+	try {
+		return statSync(path).mtimeMs;
+	} catch {
+		return 0;
+	}
+}
+
+export function resolveApiKey(): string | undefined {
+	const settings = settingsPath();
+	const authPath = join(homedir(), ".pi", "agent", "auth.json");
+	const stamp = `${mtimeMs(settings)}:${mtimeMs(authPath)}:${process.env.WOKEY_API_KEY ?? ""}`;
+	if (apiKeyCache?.stamp === stamp) return apiKeyCache.key;
+
+	let key = loadSettings().apiKey?.trim() || undefined;
+	if (!key) {
+		try {
+			const auth = JSON.parse(readFileSync(authPath, "utf8")) as Record<string, { type?: string; key?: string }>;
+			const entry = auth?.wokey;
+			if (entry?.type === "api_key" && typeof entry.key === "string" && entry.key.trim()) key = entry.key.trim();
+		} catch {
+			/* fall through to env */
+		}
+	}
+	if (!key) key = process.env.WOKEY_API_KEY?.trim() || undefined;
+
+	apiKeyCache = { key, stamp };
+	return key;
+}
+
+/**
+ * pi resolves credentials from its own store *before* calling a provider's
+ * streamSimple (`model-registry.js:33-41`: no resolution → hard "No API key found").
+ * So a key that only lives in `wokey.json` would never be used. `/wokey key` therefore
+ * writes both stores; this helper keeps the two in step without clobbering other
+ * providers' entries.
+ */
+export function writePiCredential(key: string): void {
+	const path = join(homedir(), ".pi", "agent", "auth.json");
+	let auth: Record<string, unknown> = {};
+	try {
+		const parsed = JSON.parse(readFileSync(path, "utf8")) as unknown;
+		if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) auth = parsed as Record<string, unknown>;
+	} catch {
+		/* absent or malformed: start a fresh store rather than refusing to save */
+	}
+	auth[PROVIDER_ID] = { type: "api_key", key };
+	mkdirSync(dirname(path), { recursive: true });
+	writeFileSync(path, `${JSON.stringify(auth, null, 2)}\n`, { mode: 0o600 });
+	chmodSync(path, 0o600);
+}
+
+export function clearPiCredential(): boolean {
+	const path = join(homedir(), ".pi", "agent", "auth.json");
+	try {
+		const parsed = JSON.parse(readFileSync(path, "utf8")) as Record<string, unknown>;
+		if (!(PROVIDER_ID in parsed)) return false;
+		delete parsed[PROVIDER_ID];
+		writeFileSync(path, `${JSON.stringify(parsed, null, 2)}\n`, { mode: 0o600 });
+		chmodSync(path, 0o600);
+		return true;
+	} catch {
+		return false;
+	}
+}
+
+export function resolveConfig(overrides?: Partial<WokeyConfig>): WokeyConfig {
+	const settings = loadSettings();
+	// Env overrides exist so the trust anchors can be exercised deliberately in a test
+	// (point the expected host at the wrong value and confirm the check fires) without
+	// editing source. Unset in normal use.
+	const envPcr0 = process.env.WOKEY_EXPECTED_PCR0?.trim();
+	const envHost = process.env.WOKEY_EXPECTED_HOST?.trim();
+	const envPath = process.env.WOKEY_EXPECTED_PATH?.trim();
+	return {
+		...DEFAULT_CONFIG,
+		...(settings.baseUrl ? { baseUrl: settings.baseUrl } : {}),
+		...(settings.api ? { api: settings.api } : {}),
+		...(typeof settings.codexEnvelope === "boolean" ? { codexEnvelope: settings.codexEnvelope } : {}),
+		...(typeof settings.verify === "boolean" ? { verify: settings.verify } : {}),
+		...(typeof settings.notifyOnFailure === "boolean" ? { notifyOnFailure: settings.notifyOnFailure } : {}),
+		...(settings.expectedHost ? { expectedHost: settings.expectedHost } : {}),
+		...(settings.expectedHosts?.length
+			? { expectedHosts: settings.expectedHosts }
+			: (settings.expectedHost
+				? { expectedHosts: [settings.expectedHost] }
+				: envHost
+					? { expectedHosts: [envHost] }
+					: {})),
+		...(settings.expectedPaths?.length ? { expectedPaths: settings.expectedPaths } : {}),
+		...(settings.expectedPcr0 ? { expectedPcr0: settings.expectedPcr0.toLowerCase() } : {}),
+		...(envPcr0 ? { expectedPcr0: envPcr0.toLowerCase() } : {}),
+		...(envHost ? { expectedHost: envHost } : {}),
+		...(envPath ? { expectedPaths: [envPath] } : {}),
+		...(process.env.WOKEY_NO_VERIFY === "1" ? { verify: false } : {}),
+		...overrides,
+	};
+}
