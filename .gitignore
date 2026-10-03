@@ -2,3 +2,6 @@ node_modules/
 .pi/
 *.tmp
 *.tgz
+
+# Local development notes — never commit
+DEV-NOTES.md
