@@ -24,9 +24,8 @@ response can be proven.
 ## Contents
 
 - [Install](#install)
-- [Set your key](#set-your-key)
+- [Usage](#usage)
 - [What you get](#what-you-get)
-- [Using it day to day](#using-it-day-to-day)
 - [Reading the verdict](#reading-the-verdict)
 - [Models](#models)
 - [How the verification works](#how-the-verification-works)
@@ -49,44 +48,7 @@ pi install npm:pi-wokey
 That is the whole installation. Restart pi, or start a new session, and the `wokey`
 provider is available with the models listed below.
 
-## Set your key
-
-Get an API key from wokey, then give it to pi in whichever way suits you:
-
-```bash
-/wokey key sk-your-key-here
-```
-
-That writes it to `~/.pi/agent/wokey.json` (mode `600`) and mirrors it into pi's own
-credential store, so requests authenticate normally.
-
-Prefer not to paste keys into a chat? Write the file yourself, or export
-`WOKEY_API_KEY` in your environment — both are picked up automatically:
-
-```bash
-# or, entirely by hand:
-mkdir -p ~/.pi/agent && echo '{"apiKey":"sk-..."}' > ~/.pi/agent/wokey.json
-chmod 600 ~/.pi/agent/wokey.json
-
-# or, per shell:
-export WOKEY_API_KEY=sk-...
-```
-
-Keys are looked up in this order: `~/.pi/agent/wokey.json` → pi's credential store
-(`auth.json`, entry `wokey`) → the `WOKEY_API_KEY` environment variable.
-
-## What you get
-
-| | |
-|---|---|
-| **Three GPT-6 models** | `gpt-6.1-sol`, `gpt-6-luna`, `gpt-6-astra`, with wokey's live context limits and thinking levels. |
-| **Verified every response** | Each reply carries a signed proof from the enclave that produced it. This extension checks it and labels the exchange. |
-| **Warn-only, never blocking** | A failed or missing proof is reported, but your reply is always delivered. A relay outage degrades into a notice, not a dead session. |
-| **Silent by default** | No popups, no prompts, no flags to set. `/wokey status` is there when you want the detail. |
-| **Live catalog sync** | Context windows and rates are re-read from wokey on every startup, so the numbers you see are current. |
-| **Native TUI panels** | `/wokey` renders as real pi panels, not a wall of text. |
-
-## Using it day to day
+## Usage
 
 There is nothing to do. Pick `wokey` as your provider, choose a model, and work.
 
@@ -112,6 +74,23 @@ In a headless run (`pi -p`, or no UI) the subcommands print instead of opening a
 /wokey status          /wokey models
 /wokey key <value>     /wokey unset
 ```
+
+Give pi your wokey key with `/wokey key sk-your-key-here` — it writes
+`~/.pi/agent/wokey.json` (mode `600`) and mirrors it into pi's own credential store.
+Prefer not to paste a key into a chat? Write that file yourself, or export
+`WOKEY_API_KEY`; both are picked up automatically. See [Configuration](#configuration)
+for where keys are looked up and what else you can change.
+
+## What you get
+
+| | |
+|---|---|
+| **Three GPT-6 models** | `gpt-6.1-sol`, `gpt-6-luna`, `gpt-6-astra`, with wokey's live context limits and thinking levels. |
+| **Verified every response** | Each reply carries a signed proof from the enclave that produced it. This extension checks it and labels the exchange. |
+| **Warn-only, never blocking** | A failed or missing proof is reported, but your reply is always delivered. A relay outage degrades into a notice, not a dead session. |
+| **Silent by default** | No popups, no prompts, no flags to set. `/wokey status` is there when you want the detail. |
+| **Live catalog sync** | Context windows and rates are re-read from wokey on every startup, so the numbers you see are current. |
+| **Native TUI panels** | `/wokey` renders as real pi panels, not a wall of text. |
 
 ## Reading the verdict
 
@@ -235,6 +214,9 @@ live proof from the new route — never pre-approve a host from documentation al
 ## Configuration
 
 Everything is optional. Add keys to `~/.pi/agent/wokey.json` (defaults shown):
+
+Keys are looked up in this order: `~/.pi/agent/wokey.json` → pi's credential store
+(`auth.json`, entry `wokey`) → the `WOKEY_API_KEY` environment variable.
 
 | Key | Default | Purpose |
 |---|---|---|
