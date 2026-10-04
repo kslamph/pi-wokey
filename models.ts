@@ -1,32 +1,46 @@
 /**
- * The wokey.ai GPT lineup.
+ * The wokey.ai lineup, per route.
  *
  * The baked-in table below was reconciled against the live catalog
- * (`GET https://api.wokey.ai/v1/models`, 2026-10-03, 39 models): all eight ids
- * exist, and the input/output/cache-read rates match wokey.ai/models?vendor=chatgpt.
+ * (`GET https://api.wokey.ai/v1/models`, 2026-10-03, 39 models): all eight GPT
+ * ids exist, and the input/output/cache-read rates match
+ * wokey.ai/models?vendor=chatgpt. Claude Opus 5.5 carries the approved metadata
+ * from the multi-protocol design spec; its thinking map and compat flags mirror
+ * pi's own generated metadata for the same model family.
  *
  * `refreshFromCatalog()` re-reads the live catalog so context limits and rates stay
  * honest — wokey documents that some models carry peak/off-peak rates on a daily
  * schedule, so a baked-in price can go stale. Failures keep the baked-in table.
+ * The catalog may move numeric facts (prices, context, max output) on known ids
+ * only; it can never pick a route, API, thinking map, or compatibility policy,
+ * and unknown ids are never activated.
  */
 
-import type { Model, ThinkingLevelMap } from "@earendil-works/pi-ai";
-import { PROVIDER_ID, type WokeyConfig } from "./config.ts";
-import { getRoute } from "./routes.ts";
+import type { AnthropicMessagesCompat, Model, ModelInputLimits, ModelPromptCache, ThinkingLevelMap } from "@earendil-works/pi-ai";
+import { PROVIDER_ID } from "./config.ts";
+import { getRoute, type WokeyApi, type WokeyRouteId } from "./routes.ts";
 
-export interface WokeyModelSpec {
+interface WokeyModelBase {
 	id: string;
 	name: string;
+	/** Which route profile serves this model: its API, base URL, and policy. */
+	route: WokeyRouteId;
 	/** USD per 1M tokens. */
 	input: number;
 	output: number;
 	cacheRead: number;
 	cacheWrite: number;
+	contextWindow: number;
+	maxTokens: number;
+	/** wokey marks some rows "(paused)"; kept out of the default lineup. */
+	paused?: boolean;
+}
+
+export interface WokeyGptSpec extends WokeyModelBase {
+	route: "openai-codex";
 	/** Official OpenAI rate for the same tier, for the savings note. */
 	officialInput: number;
 	officialOutput: number;
-	contextWindow: number;
-	maxTokens: number;
 	/**
 	 * `reasoning.effort` values the model supports, per OpenAI's model card. This is
 	 * the source of truth for the thinking picker.
@@ -51,9 +65,27 @@ export interface WokeyModelSpec {
 	 * a broken option in the picker.
 	 */
 	gatewayAcceptedEfforts?: readonly string[];
-	/** wokey marks some rows "(paused)"; kept out of the default lineup. */
-	paused?: boolean;
 }
+
+export interface WokeyAnthropicSpec extends WokeyModelBase {
+	route: "anthropic-direct";
+	/**
+	 * Exact pi thinking-level map, pinned per the design spec. `off`/`minimal`
+	 * are null (Opus 5.5 has no effort-off mode), so the picker offers exactly
+	 * low/medium/high/xhigh/max.
+	 */
+	thinkingLevelMap: ThinkingLevelMap;
+	/**
+	 * Adaptive-thinking model on the Messages API: forced adaptive thinking,
+	 * mid-conversation effort/system/tool changes, strict tools, no temperature.
+	 */
+	compat: AnthropicMessagesCompat;
+	/** Prompt cache lifetimes in seconds. */
+	promptCache?: ModelPromptCache;
+	inputLimits?: ModelInputLimits;
+}
+
+export type WokeyModelSpec = WokeyGptSpec | WokeyAnthropicSpec;
 
 /*
  * NOTE on the retired rows below (gpt-6-sol, gpt-5.6-*, gpt-5.5): their
@@ -66,24 +98,57 @@ export interface WokeyModelSpec {
 /**
  * The models this provider exposes.
  *
- * Only the GPT-6 generation: the older 6-sol / 5.6-* / 5.5 rows are superseded and
- * carry neither a price nor a performance advantage for real use, so advertising them
- * only invites the wrong pick. They are kept in `GPT_MODELS` as verified reference data
- * (context limits, rates and probed effort support are all measured), so re-enabling one
- * is a single edit here rather than a re-probe.
+ * Only the GPT-6 generation plus Claude Opus 5.5: the older 6-sol / 5.6-* / 5.5
+ * rows are superseded and carry neither a price nor a performance advantage for
+ * real use, so advertising them only invites the wrong pick. They are kept in
+ * `GPT_MODELS` as verified reference data (context limits, rates and probed
+ * effort support are all measured), so re-enabling one is a single edit here
+ * rather than a re-probe. No other Anthropic catalog result is activated.
  */
-const ACTIVE_MODEL_IDS = ["gpt-6.1-sol", "gpt-6-luna", "gpt-6-astra"] as const;
+const ACTIVE_MODEL_IDS = ["gpt-6.1-sol", "gpt-6-luna", "gpt-6-astra", "claude-opus-5-5"] as const;
 
-export const GPT_MODELS: WokeyModelSpec[] = [
-	{ id: "gpt-6.1-sol", name: "GPT-6.1 Sol", input: 0.18, output: 0.9, cacheRead: 0.009, cacheWrite: 0.225, officialInput: 2, officialOutput: 10, contextWindow: 1_050_000, maxTokens: 128_000, reasoningEfforts: ["low", "medium", "high", "xhigh", "max"] as const, gatewayAcceptedEfforts: ["none", "minimal", "low", "medium", "high", "xhigh", "max"] as const },
-	{ id: "gpt-6-sol", name: "GPT-6 Sol", input: 0.18, output: 0.9, cacheRead: 0.018, cacheWrite: 0.225, officialInput: 2, officialOutput: 10, contextWindow: 1_050_000, maxTokens: 128_000, reasoningEfforts: ["none", "low", "medium", "high", "xhigh", "max"] as const },
-	{ id: "gpt-6-luna", name: "GPT-6 Luna", input: 0.09, output: 0.45, cacheRead: 0.009, cacheWrite: 0.1125, officialInput: 0.1, officialOutput: 0.5, contextWindow: 1_050_000, maxTokens: 128_000, reasoningEfforts: ["none", "low", "medium", "high", "xhigh", "max"] as const, gatewayAcceptedEfforts: ["none", "low", "medium", "high", "xhigh", "max"] as const },
-	{ id: "gpt-6-astra", name: "GPT-6 Astra", input: 0.9, output: 4.5, cacheRead: 0.09, cacheWrite: 1.125, officialInput: 10, officialOutput: 50, contextWindow: 1_050_000, maxTokens: 128_000, reasoningEfforts: ["low", "medium", "high", "xhigh", "max"] as const, gatewayAcceptedEfforts: ["none", "minimal", "low", "medium", "high", "xhigh", "max"] as const },
-	{ id: "gpt-5.6-sol", name: "GPT-5.6 Sol", input: 0.44, output: 2.2, cacheRead: 0.044, cacheWrite: 0.55, officialInput: 4, officialOutput: 20, contextWindow: 1_050_000, maxTokens: 128_000, reasoningEfforts: ["none", "minimal", "low", "medium", "high", "xhigh", "max"] as const },
-	{ id: "gpt-5.6-terra", name: "GPT-5.6 Terra", input: 0.2, output: 1.2, cacheRead: 0.02, cacheWrite: 0.25, officialInput: 2, officialOutput: 12, contextWindow: 1_050_000, maxTokens: 128_000, reasoningEfforts: ["none", "low", "medium", "high", "xhigh", "max"] as const },
-	{ id: "gpt-5.6-luna", name: "GPT-5.6 Luna", input: 0.12, output: 0.72, cacheRead: 0.012, cacheWrite: 0.15, officialInput: 0.2, officialOutput: 1.2, contextWindow: 1_050_000, maxTokens: 128_000, reasoningEfforts: ["none", "minimal", "low", "medium", "high", "xhigh", "max"] as const },
-	{ id: "gpt-5.5", name: "GPT-5.5", input: 0.5, output: 3, cacheRead: 0.05, cacheWrite: 0, officialInput: 5, officialOutput: 30, contextWindow: 1_050_000, maxTokens: 128_000, reasoningEfforts: ["none", "low", "medium", "high", "xhigh"] as const },
+export const GPT_MODELS: WokeyGptSpec[] = [
+	{ id: "gpt-6.1-sol", name: "GPT-6.1 Sol", route: "openai-codex", input: 0.18, output: 0.9, cacheRead: 0.009, cacheWrite: 0.225, officialInput: 2, officialOutput: 10, contextWindow: 1_050_000, maxTokens: 128_000, reasoningEfforts: ["low", "medium", "high", "xhigh", "max"] as const, gatewayAcceptedEfforts: ["none", "minimal", "low", "medium", "high", "xhigh", "max"] as const },
+	{ id: "gpt-6-sol", name: "GPT-6 Sol", route: "openai-codex", input: 0.18, output: 0.9, cacheRead: 0.018, cacheWrite: 0.225, officialInput: 2, officialOutput: 10, contextWindow: 1_050_000, maxTokens: 128_000, reasoningEfforts: ["none", "low", "medium", "high", "xhigh", "max"] as const },
+	{ id: "gpt-6-luna", name: "GPT-6 Luna", route: "openai-codex", input: 0.09, output: 0.45, cacheRead: 0.009, cacheWrite: 0.1125, officialInput: 0.1, officialOutput: 0.5, contextWindow: 1_050_000, maxTokens: 128_000, reasoningEfforts: ["none", "low", "medium", "high", "xhigh", "max"] as const, gatewayAcceptedEfforts: ["none", "low", "medium", "high", "xhigh", "max"] as const },
+	{ id: "gpt-6-astra", name: "GPT-6 Astra", route: "openai-codex", input: 0.9, output: 4.5, cacheRead: 0.09, cacheWrite: 1.125, officialInput: 10, officialOutput: 50, contextWindow: 1_050_000, maxTokens: 128_000, reasoningEfforts: ["low", "medium", "high", "xhigh", "max"] as const, gatewayAcceptedEfforts: ["none", "minimal", "low", "medium", "high", "xhigh", "max"] as const },
+	{ id: "gpt-5.6-sol", name: "GPT-5.6 Sol", route: "openai-codex", input: 0.44, output: 2.2, cacheRead: 0.044, cacheWrite: 0.55, officialInput: 4, officialOutput: 20, contextWindow: 1_050_000, maxTokens: 128_000, reasoningEfforts: ["none", "minimal", "low", "medium", "high", "xhigh", "max"] as const },
+	{ id: "gpt-5.6-terra", name: "GPT-5.6 Terra", route: "openai-codex", input: 0.2, output: 1.2, cacheRead: 0.02, cacheWrite: 0.25, officialInput: 2, officialOutput: 12, contextWindow: 1_050_000, maxTokens: 128_000, reasoningEfforts: ["none", "low", "medium", "high", "xhigh", "max"] as const },
+	{ id: "gpt-5.6-luna", name: "GPT-5.6 Luna", route: "openai-codex", input: 0.12, output: 0.72, cacheRead: 0.012, cacheWrite: 0.15, officialInput: 0.2, officialOutput: 1.2, contextWindow: 1_050_000, maxTokens: 128_000, reasoningEfforts: ["none", "minimal", "low", "medium", "high", "xhigh", "max"] as const },
+	{ id: "gpt-5.5", name: "GPT-5.5", route: "openai-codex", input: 0.5, output: 3, cacheRead: 0.05, cacheWrite: 0, officialInput: 5, officialOutput: 30, contextWindow: 1_050_000, maxTokens: 128_000, reasoningEfforts: ["none", "low", "medium", "high", "xhigh"] as const },
 ];
+
+/**
+ * The single active Anthropic model, served by pi's native Anthropic Messages
+ * adapter through the `anthropic-direct` route. Metadata is pinned by the
+ * multi-protocol design spec — the thinking map and compat flags match pi's own
+ * generated metadata for the Opus 5.5 family, and the rates are wokey's.
+ */
+const CLAUDE_OPUS_5_5: WokeyAnthropicSpec = {
+	id: "claude-opus-5-5",
+	name: "Claude Opus 5.5",
+	route: "anthropic-direct",
+	input: 0.6,
+	output: 3.0,
+	cacheRead: 0.03,
+	cacheWrite: 0.75,
+	contextWindow: 1_000_000,
+	maxTokens: 128_000,
+	thinkingLevelMap: { off: null, minimal: null, low: "low", medium: "medium", high: "high", xhigh: "xhigh", max: "max" },
+	compat: {
+		forceAdaptiveThinking: true,
+		supportsTemperature: false,
+		supportsMidConvoEffort: true,
+		supportsMidConvoSystemMessages: true,
+		supportsMidConvoToolChanges: true,
+		supportsStrictTools: true,
+	},
+	promptCache: { short: 300, long: 3600 },
+	inputLimits: { images: { resize: { maxWidth: 2000, maxHeight: 2000, maxBytes: 4718592, jpegQuality: 80 } } },
+};
+
+/** The provider-wide catalog: every known row, regardless of route. */
+export const WOKEY_MODELS: WokeyModelSpec[] = [...GPT_MODELS, CLAUDE_OPUS_5_5];
 
 const PER_MILLION = 1_000_000;
 
@@ -125,19 +190,19 @@ export function thinkingLevelMapFor(supported: readonly string[]): ThinkingLevel
 	return map as ThinkingLevelMap;
 }
 
-export function toModel(spec: WokeyModelSpec, config: WokeyConfig): Model<"openai-codex-responses" | "openai-responses" | "openai-completions"> {
-	// Task 1 shim: API and base URL come from the route profile, not global config.
-	// Task 2 makes the spec itself route-aware (`route: WokeyRouteId`) and drops
-	// the config parameter. `config` is intentionally unused until then.
-	void config;
-	const route = getRoute("openai-codex");
-	return {
+export function toModel(spec: WokeyGptSpec): Model<"openai-responses">;
+export function toModel(spec: WokeyAnthropicSpec): Model<"anthropic-messages">;
+export function toModel(spec: WokeyModelSpec): Model<WokeyApi>;
+export function toModel(spec: WokeyModelSpec): Model<WokeyApi> {
+	// API and base URL come from the route profile, never from global config or
+	// the live catalog — a model cannot change which adapter serves it.
+	const route = getRoute(spec.route);
+	const shared = {
 		id: spec.id,
 		name: spec.name,
-		api: route.api,
 		provider: PROVIDER_ID,
 		baseUrl: route.baseUrl,
-		input: ["text", "image"],
+		input: ["text", "image"] as ("text" | "image")[],
 		// `ModelCost` rates are USD per 1M tokens — the same unit as `spec`, and
 		// the unit pi's own catalog uses (models-store.json: openai gpt-6.1-sol is
 		// {"input":2,"output":10,"cacheRead":0.1,"cacheWrite":2.5}). pi-ai's
@@ -153,21 +218,36 @@ export function toModel(spec: WokeyModelSpec, config: WokeyConfig): Model<"opena
 			cacheWrite: spec.cacheWrite,
 		},
 		reasoning: true,
-		thinkingLevelMap: thinkingLevelMapFor(spec.reasoningEfforts),
 		contextWindow: spec.contextWindow,
 		maxTokens: spec.maxTokens,
-		promptCache: { retention: "in-memory" },
-	} as Model<"openai-codex-responses" | "openai-responses" | "openai-completions">;
+	};
+	if (route.api === "anthropic-messages") {
+		if (spec.route !== "anthropic-direct") throw new Error(`wokey: spec "${spec.id}" routes to "${spec.route}" but the profile serves "${route.api}"`);
+		return {
+			...shared,
+			api: route.api,
+			thinkingLevelMap: { ...spec.thinkingLevelMap },
+			compat: { ...spec.compat },
+			...(spec.promptCache ? { promptCache: { ...spec.promptCache } } : {}),
+			...(spec.inputLimits ? { inputLimits: { ...spec.inputLimits, images: spec.inputLimits.images ? { ...spec.inputLimits.images } : undefined } } : {}),
+		};
+	}
+	if (spec.route !== "openai-codex") throw new Error(`wokey: spec "${spec.id}" routes to "${spec.route}" but the profile serves "${route.api}"`);
+	return {
+		...shared,
+		api: route.api,
+		thinkingLevelMap: thinkingLevelMapFor(spec.reasoningEfforts),
+	};
 }
 
 const ACTIVE = new Set<string>(ACTIVE_MODEL_IDS);
 
-export function activeModels(config: WokeyConfig): Model<"openai-codex-responses" | "openai-responses" | "openai-completions">[] {
-	return GPT_MODELS.filter((m) => !m.paused && ACTIVE.has(m.id)).map((m) => toModel(m, config));
+export function activeModels(): Model<WokeyApi>[] {
+	return WOKEY_MODELS.filter((m) => !m.paused && ACTIVE.has(m.id)).map((m) => toModel(m));
 }
 
 export function activeSpecs(): WokeyModelSpec[] {
-	return GPT_MODELS.filter((m) => !m.paused && ACTIVE.has(m.id));
+	return WOKEY_MODELS.filter((m) => !m.paused && ACTIVE.has(m.id));
 }
 
 // ── live catalog ───────────────────────────────────────────────────────────────
@@ -177,7 +257,7 @@ interface CatalogEntry {
 	name?: string;
 	context_length?: number;
 	max_completion_tokens?: number;
-	pricing?: { prompt?: string; completion?: string; input_cache_read?: string; input_cache_write?: string };
+	pricing?: { prompt?: string; completion?: string; input_cache_read?: string; input_cache_write?: string; input_cache_write_1h?: string };
 }
 
 /**
@@ -197,6 +277,8 @@ const rate = (v: string | undefined): number => {
  * Reconcile the baked-in table with the live catalog in place. Unknown ids are
  * ignored and the baked-in values are kept on any malformed field, so a partial
  * or hostile catalog response cannot shrink a context window or zero a rate.
+ * Only numeric facts move: the entry carries no route, API, thinking map, or
+ * compat of its own, and none is read even if one is present.
  */
 export function refreshFromCatalog(data: unknown): { updated: string[]; warnings: string[] } {
 	const entries = (data as { data?: CatalogEntry[] })?.data;
@@ -206,7 +288,7 @@ export function refreshFromCatalog(data: unknown): { updated: string[]; warnings
 	const updated: string[] = [];
 	const warnings: string[] = [];
 
-	for (const spec of GPT_MODELS) {
+	for (const spec of WOKEY_MODELS) {
 		const live = byId.get(spec.id);
 		if (!live) {
 			// Only active rows are advertised; a retired row vanishing upstream is
@@ -235,6 +317,22 @@ export function refreshFromCatalog(data: unknown): { updated: string[]; warnings
 			if (value > 0 && value !== spec[field]) {
 				spec[field] = value;
 				changed = true;
+			}
+		}
+		// Wokey's 1-hour cache-write rate is validated against Anthropic's native
+		// `2 × input` rule and never stored: pi's calculateCost() prices 1h writes
+		// natively (`usage.cacheWrite1h` at 2× input on top of base `cacheWrite`),
+		// so adopting the figure would double-count it. A divergent quote is a
+		// display/cost-model question, surfaced as a warning.
+		if (spec.route === "anthropic-direct" && p.input_cache_write_1h !== undefined) {
+			const quoted = rate(p.input_cache_write_1h);
+			if (quoted > 0) {
+				const expected = 2 * spec.input;
+				if (Math.abs(quoted - expected) > 1e-9) {
+					warnings.push(
+						`catalog: ${spec.id} input_cache_write_1h ${quoted} diverges from native 2×input ${expected} — keeping native calculation`,
+					);
+				}
 			}
 		}
 		// Only report rows that actually moved, so a no-op sync does not churn the

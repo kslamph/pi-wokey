@@ -16,7 +16,6 @@ import {
 	resolveApiKey,
 	saveSettings,
 	settingsPath,
-	resolveConfig,
 	writePiCredential,
 	type WokeyConfig,
 } from "./config.ts";
@@ -119,7 +118,7 @@ export function renderModels(): string {
 	const rows = activeSpecs().map((s) => {
 		// Build the map the same way toModel does, so the listed levels are exactly
 		// what pi's picker will offer for this model.
-		const levels = getSupportedThinkingLevels(toModel(s, resolveConfig()) as never) as string[];
+		const levels = getSupportedThinkingLevels(toModel(s) as never) as string[];
 		return {
 			id: s.id,
 			name: s.name,

@@ -86,7 +86,7 @@ export default function wokeyProvider(pi: ExtensionAPI, config: WokeyConfig = re
 		name: PROVIDER_NAME,
 		baseUrl: getRoute("openai-codex").baseUrl,
 		api: getRoute("openai-codex").api,
-		models: activeModels(config),
+		models: activeModels(),
 		streamSimple,
 	});
 
@@ -109,7 +109,7 @@ export default function wokeyProvider(pi: ExtensionAPI, config: WokeyConfig = re
 
 	pi.on("session_start", (_event, ctx) => {
 		ui = ctx.ui;
-		notify(`wokey: ${PROVIDER_NAME} ready — ${activeModels(config).length} GPT models, proof probing ${config.verify ? "on" : "off"} (run /wokey for status)`);
+		notify(`wokey: ${PROVIDER_NAME} ready — ${activeModels().length} models, proof probing ${config.verify ? "on" : "off"} (run /wokey for status)`);
 		// Fire-and-forget: a hung relay catalog call must not block session start.
 		void syncCatalog();
 	});
@@ -131,7 +131,7 @@ export default function wokeyProvider(pi: ExtensionAPI, config: WokeyConfig = re
 				name: PROVIDER_NAME,
 				baseUrl: getRoute("openai-codex").baseUrl,
 				api: getRoute("openai-codex").api,
-				models: activeModels(config),
+				models: activeModels(),
 				streamSimple,
 			});
 		} catch {
