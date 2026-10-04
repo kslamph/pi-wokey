@@ -21,13 +21,15 @@ import {
 	type Api,
 	type AssistantMessageEventStream,
 	type Model,
+	type ProviderStreams,
 	type SimpleStreamOptions,
+	type StreamOptions,
 	type TranscriptContext,
 } from "@earendil-works/pi-ai";
 import { getApiProvider } from "@earendil-works/pi-ai/compat";
 import type { WokeyConfig } from "./config.ts";
 import { resolveApiKey } from "./config.ts";
-import { getRoute } from "./routes.ts";
+import { getRoute, type WokeyRoute } from "./routes.ts";
 /** Kept here so existing imports keep working; the implementation lives on the route. */
 export { applyCodexEnvelope } from "./routes.ts";
 import { createProbingFetch, type ProofReport } from "./verify/probe.ts";
@@ -62,6 +64,65 @@ function clampCacheKey(key: string): string {
 	return chars.length <= PROMPT_CACHE_KEY_MAX_LENGTH ? key : chars.slice(0, PROMPT_CACHE_KEY_MAX_LENGTH).join("");
 }
 
+/**
+ * Shape one call's options for a route: proof-mode headers stripped, session-keyed
+ * route headers, the probing fetch when verification is on, and the caller
+ * `onPayload` chained before the route policy. Everything else on the options
+ * object (abort signal, timeout, env, onResponse, ...) passes through untouched.
+ */
+function buildRoutedOptions<T extends StreamOptions>(
+	route: WokeyRoute,
+	config: WokeyConfig,
+	onReport: (report: ProofReport) => void,
+	model: Model<Api>,
+	options: T | undefined,
+): T {
+	const headers: Record<string, string | null> = { ...options?.headers };
+	// The provider drives the proof transport, and the only delivery the probe can
+	// verify is the relay's default trailing `event: tee.proof` SSE record. Drop a
+	// caller-supplied proof-mode header so the relay cannot be asked for a transport
+	// (e.g. multipart) that pi's streaming adapter cannot consume.
+	for (const key of Object.keys(headers)) {
+		if (key.toLowerCase() === config.proofHeaderName.toLowerCase()) delete headers[key];
+	}
+
+	const upstream = (options as StreamOptions | undefined)?.onPayload;
+	// One cache key per conversation: pi supplies the session id, so fall back
+	// to a process-wide key only when it is absent.
+	const cacheKey = clampCacheKey(options?.sessionId ?? processCacheKey);
+	const routedHeaders = route.transformHeaders(headers, cacheKey);
+
+	// Built as the base shape, then cast: T only ever narrows StreamOptions with
+	// per-API extras, and the spread above carries those through untouched.
+	const routed: StreamOptions = {
+		...options,
+		// pi supplies a key from its own credential store when it has one; otherwise
+		// fall back to this extension's settings so `/wokey key <value>` is actually
+		// sufficient on its own and does not require a second copy in auth.json.
+		apiKey: options?.apiKey ?? resolveApiKey(),
+		headers: routedHeaders,
+		// The probe verifies against this route's policy. When verification is off
+		// there is nothing to wrap, so pi (or the caller) supplies the transport.
+		...(config.verify
+			? {
+					fetch: createProbingFetch({
+						policy: { expectedPcr0: config.expectedPcr0, endpoint: route.endpoint, requestBinding: route.requestBinding },
+						onReport,
+						expectedModel: model.id,
+						extractServedModel: route.extractServedModel,
+					}),
+				}
+			: {}),
+		// Chain rather than replace, so another extension's instrumentation still runs.
+		onPayload: async (payload: unknown, m: Model<Api>) => {
+			const replaced = upstream ? await upstream(payload, m) : undefined;
+			const base = replaced ?? payload;
+			return route.transformPayload(base, cacheKey);
+		},
+	};
+	return routed as T;
+}
+
 export function createWokeyStream(deps: WokeyStreamDeps) {
 	const resolveImpl = (model: Model<Api>) => {
 		const impl = getApiProvider(model.api) ?? getApiProvider("openai-responses") ?? getApiProvider("openai-completions");
@@ -75,49 +136,39 @@ export function createWokeyStream(deps: WokeyStreamDeps) {
 		options?: SimpleStreamOptions,
 	): AssistantMessageEventStream {
 		const impl = resolveImpl(model);
+		// Task 4 selects the route from the model instead of this GPT shim.
+		return impl.streamSimple(model, context, buildRoutedOptions(streamRoute(), deps.config, deps.onReport, model, options));
+	};
+}
 
-		const headers: Record<string, string | null> = { ...options?.headers };
-		// The provider drives the proof transport, and the only delivery the probe can
-		// verify is the relay's default trailing `event: tee.proof` SSE record. Drop a
-		// caller-supplied proof-mode header so the relay cannot be asked for a transport
-		// (e.g. multipart) that pi's streaming adapter cannot consume.
-		for (const key of Object.keys(headers)) {
-			if (key.toLowerCase() === deps.config.proofHeaderName.toLowerCase()) delete headers[key];
+/**
+ * Wrap one route's native pi API implementation with verification.
+ *
+ * The caller supplies the already-resolved native `stream`/`streamSimple` pair
+ * for `route.api` (Task 5 resolves these from pi's API registry per route); the
+ * wrapper shapes requests through the route policy and verifies responses with
+ * the route's trust policy. A model whose API does not match the route is a
+ * programming error, so it throws — it never silently runs through another API.
+ */
+export function createVerifiedStreams(
+	route: WokeyRoute,
+	config: WokeyConfig,
+	onReport: (report: ProofReport) => void,
+	native: ProviderStreams,
+): ProviderStreams {
+	const checkApi = (model: Model<Api>): void => {
+		if (model.api !== route.api) {
+			throw new Error(`wokey: unsupported API "${model.api}" for model "${model.id}" on route "${route.id}" (serves "${route.api}")`);
 		}
-
-		const upstream = options?.onPayload;
-		const route = streamRoute();
-		// One cache key per conversation: pi supplies the session id, so fall back
-		// to a process-wide key only when it is absent.
-		const cacheKey = clampCacheKey(options?.sessionId ?? processCacheKey);
-		const routedHeaders = route.transformHeaders(headers, cacheKey);
-
-		return impl.streamSimple(model, context, {
-			...options,
-			// pi supplies a key from its own credential store when it has one; otherwise
-			// fall back to this extension's settings so `/wokey key <value>` is actually
-			// sufficient on its own and does not require a second copy in auth.json.
-			apiKey: options?.apiKey ?? resolveApiKey(),
-			headers: routedHeaders,
-			// The probe verifies against this route's policy. When verification is off
-			// there is nothing to wrap, so pi (or the caller) supplies the transport.
-			// Task 4 selects the route from the model instead of this GPT shim.
-			...(deps.config.verify
-				? {
-						fetch: createProbingFetch({
-							policy: { expectedPcr0: deps.config.expectedPcr0, endpoint: route.endpoint, requestBinding: route.requestBinding },
-							onReport: deps.onReport,
-							expectedModel: model.id,
-							extractServedModel: route.extractServedModel,
-						}),
-					}
-				: {}),
-			// Chain rather than replace, so another extension's instrumentation still runs.
-			onPayload: async (payload, m) => {
-				const replaced = upstream ? await upstream(payload, m) : undefined;
-				const base = replaced ?? payload;
-				return route.transformPayload(base, cacheKey);
-			},
-		});
+	};
+	return {
+		stream(model: Model<Api>, context: TranscriptContext, options?: StreamOptions): AssistantMessageEventStream {
+			checkApi(model);
+			return native.stream(model, context, buildRoutedOptions(route, config, onReport, model, options));
+		},
+		streamSimple(model: Model<Api>, context: TranscriptContext, options?: SimpleStreamOptions): AssistantMessageEventStream {
+			checkApi(model);
+			return native.streamSimple(model, context, buildRoutedOptions(route, config, onReport, model, options));
+		},
 	};
 }
