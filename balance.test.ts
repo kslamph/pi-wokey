@@ -7,6 +7,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { fetchBalance, parseBalance } from "./balance.ts";
 import { resolveConfig } from "./config.ts";
+import { getRoute } from "./routes.ts";
 
 /** The exact payload the live endpoint returned, trimmed to what we read. */
 const LIVE = { userId: "2690", availableUsd: 10.787384, reservedUsd: 0 };
@@ -61,11 +62,11 @@ describe("parseBalance", () => {
 describe("fetchBalance", () => {
 	const config = resolveConfig();
 
-	it("asks the balance endpoint under the configured base URL", async () => {
+	it("asks the balance endpoint under the route's relay base URL", async () => {
 		const spy = stubFetch(() => ok(LIVE));
 		await fetchBalance(config, "sk-test");
 		expect(spy).toHaveBeenCalledWith(
-			`${config.baseUrl}/dashboard/balance`,
+			`${getRoute("openai-codex").baseUrl}/dashboard/balance`,
 			expect.objectContaining({ headers: { authorization: "Bearer sk-test" } }),
 		);
 	});

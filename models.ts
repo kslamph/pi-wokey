@@ -12,6 +12,7 @@
 
 import type { Model, ThinkingLevelMap } from "@earendil-works/pi-ai";
 import { PROVIDER_ID, type WokeyConfig } from "./config.ts";
+import { getRoute } from "./routes.ts";
 
 export interface WokeyModelSpec {
 	id: string;
@@ -125,12 +126,17 @@ export function thinkingLevelMapFor(supported: readonly string[]): ThinkingLevel
 }
 
 export function toModel(spec: WokeyModelSpec, config: WokeyConfig): Model<"openai-codex-responses" | "openai-responses" | "openai-completions"> {
+	// Task 1 shim: API and base URL come from the route profile, not global config.
+	// Task 2 makes the spec itself route-aware (`route: WokeyRouteId`) and drops
+	// the config parameter. `config` is intentionally unused until then.
+	void config;
+	const route = getRoute("openai-codex");
 	return {
 		id: spec.id,
 		name: spec.name,
-		api: config.api,
+		api: route.api,
 		provider: PROVIDER_ID,
-		baseUrl: config.baseUrl,
+		baseUrl: route.baseUrl,
 		input: ["text", "image"],
 		// `ModelCost` rates are USD per 1M tokens — the same unit as `spec`, and
 		// the unit pi's own catalog uses (models-store.json: openai gpt-6.1-sol is

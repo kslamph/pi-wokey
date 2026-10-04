@@ -22,9 +22,13 @@ const { publicKey, privateKey } = generateKeyPairSync("ed25519");
 const PUBKEY_SPKI_B64 = publicKey.export({ type: "spki", format: "der" }).toString("base64");
 const NONCE = Buffer.from("integration-nonce-0123", "utf8").toString("base64");
 
-const CONFIG: WokeyConfig = resolveConfig({ baseUrl: "http://127.0.0.1:0/v1" });
-/** Request binding is only meaningful where the client can reproduce the signed body. */
-const STRICT: WokeyConfig = resolveConfig({ baseUrl: "http://127.0.0.1:0/v1", requestBinding: "verify" });
+const CONFIG: WokeyConfig = resolveConfig();
+/**
+ * Both measured routes mark request binding "unavailable" (the relay rewrites the
+ * body before the enclave sees it), so even a byte-exact exchange reports
+ * verified-with-gaps with Request binding as the documented gap. Task 3 makes the
+ * binding policy per-route explicit in `VerificationPolicy`.
+ */
 
 /** Signs a genuine v2 statement over the given bodies. */
 function signProof(upstreamBody: Buffer, requestBody: Buffer, over: Partial<TeeProofWire> = {}): TeeProofWire {
@@ -148,14 +152,17 @@ describe("probing fetch, end to end", () => {
 			],
 		});
 
-		const { clientBytes, report } = await run(REQUEST_BODY, STRICT);
+		const { clientBytes, report } = await run(REQUEST_BODY);
 
 		expect(clientBytes.toString("utf8")).toBe(upstream);
 		expect(clientBytes.toString("utf8")).not.toContain("tee.proof");
-		expect(report.status).toBe("verified");
+		expect(report.status).toBe("verified-with-gaps");
 		expect(report.reportedModel).toBe("gpt-6.1-sol");
 		expect(report.upstreamHost).toBe("chatgpt.com");
-		for (const c of report.checks) expect(c.ok, `${c.name}: ${c.detail}`).toBe(true);
+		for (const c of report.checks) {
+			if (c.name === "Request binding") expect(c.ok).toBe(false); // documented gap
+			else expect(c.ok, `${c.name}: ${c.detail}`).toBe(true);
+		}
 	});
 
 	it("flags a tampered response body while still delivering it (warn-only)", async () => {
@@ -172,14 +179,14 @@ describe("probing fetch, end to end", () => {
 		expect(report.checks.find((c) => !c.ok)?.name).toBe("Response signature");
 	});
 
-	it("flags a request that does not match what was signed", async () => {
+	it("reports a request that does not match as a binding gap, not a failure", async () => {
 		const upstream = 'event: response.completed\ndata: {}\n\n';
 		// Sign a *different* request than the one we are about to send.
 		const proof = signProof(Buffer.from(upstream, "utf8"), Buffer.from('{"model":"gpt-6-astra"}', "utf8"));
 		reply = () => ({ contentType: "text/event-stream", chunks: [upstream, `event: tee.proof\ndata: ${JSON.stringify(proof)}\n\n`] });
 
-		const { report } = await run(REQUEST_BODY, STRICT);
-		expect(report.status).toBe("failed");
+		const { report } = await run(REQUEST_BODY);
+		expect(report.status).toBe("verified-with-gaps");
 		expect(report.checks.find((c) => c.name === "Request binding")?.ok).toBe(false);
 	});
 
@@ -210,12 +217,12 @@ describe("probing fetch, end to end", () => {
 			chunks: [WOKEY_SSE_TRANSPORT_KEEPALIVE_V1, upstream, `event: tee.proof\ndata: ${JSON.stringify(proof)}\n\n`],
 		});
 
-		const { clientBytes, report } = await run(REQUEST_BODY, STRICT);
+		const { clientBytes, report } = await run(REQUEST_BODY);
 
 		// The keepalive is relay transport noise, not part of the signed body; it
 		// must not make the delivered bytes hash differently from the signature.
 		expect(clientBytes.toString("utf8")).toContain(WOKEY_SSE_TRANSPORT_KEEPALIVE_V1);
-		expect(report.status).toBe("verified");
+		expect(report.status).toBe("verified-with-gaps");
 		expect(report.checks.find((c) => c.name === "Response signature")?.ok).toBe(true);
 	});
 
@@ -232,7 +239,7 @@ describe("probing fetch, end to end", () => {
 			],
 		});
 
-		const { report } = await run(REQUEST_BODY, STRICT);
+		const { report } = await run(REQUEST_BODY);
 
 		// A forged mid-stream marker must not pass quietly: the hashed prefix runs
 		// past what the client saw, so the run is reported as failed.
@@ -250,7 +257,7 @@ describe("probing fetch, end to end", () => {
 			`--${boundary}--\r\n`;
 		reply = () => ({ contentType: `multipart/form-data; boundary=${boundary}`, chunks: [envelope] });
 
-		const { clientBytes, report } = await run(REQUEST_BODY, STRICT);
+		const { clientBytes, report } = await run(REQUEST_BODY);
 
 		// The provider only speaks the relay's default SSE proof transport. An
 		// unnegotiated multipart envelope is passed through untouched and cannot
@@ -264,11 +271,11 @@ describe("probing fetch, end to end", () => {
 		const proof = signProof(Buffer.from(body, "utf8"), Buffer.from(REQUEST_BODY, "utf8"));
 		reply = () => ({ contentType: "application/json", chunks: [body, `event: tee.proof\ndata: ${JSON.stringify(proof)}\n\n`] });
 
-		const { clientBytes, report } = await run(REQUEST_BODY, STRICT);
+		const { clientBytes, report } = await run(REQUEST_BODY);
 
 		// The client must not receive the trailing proof record, and the hash must
 		// cover only the upstream body.
 		expect(clientBytes.toString("utf8")).toBe(body);
-		expect(report.status).toBe("verified");
+		expect(report.status).toBe("verified-with-gaps"); // request binding is a documented gap
 	});
 });

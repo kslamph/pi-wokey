@@ -16,6 +16,7 @@ import { describe, expect, it } from "vitest";
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { DEFAULT_CONFIG, PUBLISHED_PCR0, resolveConfig, type WokeyConfig } from "./config.ts";
+import { getRoute } from "./routes.ts";
 import { buildV2Statement, sha256 } from "./verify/signing.ts";
 import { parseTeeProofEvent } from "./verify/tee-verify-core.ts";
 import { stripTrailingProofEvent, verifyExchange } from "./verify/probe.ts";
@@ -357,7 +358,7 @@ describe("accepted upstream hosts", () => {
 		verifyExchange({ wireBytes: sseWithProof(makeProof({ upstream_host: host })), attestationVerifier: stubAttestation() }, cfg)
 			.report.checks.find((c) => c.name === "Upstream host");
 
-	it("accepts only the measured route by default", () => {
+	it("accepts only the measured route", () => {
 		expect(hostOf("chatgpt.com")?.ok).toBe(true);
 		expect(hostOf("api.openai.com")?.ok).toBe(false);
 	});
@@ -367,14 +368,10 @@ describe("accepted upstream hosts", () => {
 		expect(hostOf("chatgpt.com.evil.net")?.ok).toBe(false);
 	});
 
-	it("accepts a second route only once it is explicitly added", () => {
-		const wide = resolveConfig({ expectedHosts: ["chatgpt.com", "api.openai.com"] });
-		expect(hostOf("api.openai.com", wide)?.ok).toBe(true);
-		expect(hostOf("chatgpt.com", wide)?.ok).toBe(true);
-		expect(hostOf("evil.chatgpt.com", wide)?.ok).toBe(false);
-	});
-
-	it("falls back to expectedHost when no list is set", () => {
-		expect(hostOf("chatgpt.com", resolveConfig({ expectedHosts: [] }))?.ok).toBe(true);
+	// Trust anchors are code-pinned on the route profile, not user-configurable:
+	// there is no settings knob that widens the accepted host anymore. A second
+	// route arrives only as a new measured route profile (Task 3 adds anthropic).
+	it("pins the accepted host on the route, not in user settings", () => {
+		expect(getRoute("openai-codex").endpoint.host).toBe("chatgpt.com");
 	});
 });

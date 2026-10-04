@@ -21,6 +21,7 @@ import {
 	type WokeyConfig,
 } from "./config.ts";
 import { activeSpecs, toModel } from "./models.ts";
+import { getRoute } from "./routes.ts";
 import type { BalanceInfo } from "./balance.ts";
 import type { ProofReport } from "./verify/probe.ts";
 
@@ -90,10 +91,11 @@ export function renderStatus(
 		`key       ${maskKey(key)}  (${source})`,
 	];
 	if (opts.expanded) {
+		const route = getRoute("openai-codex");
 		lines.push(
 			`pinned    ${config.expectedPcr0 ? `${config.expectedPcr0.slice(0, 24)}…` : "(unset — model substitution NOT checked)"}`,
-			`upstream  ${config.expectedHost}${config.expectedPaths.join("")}`,
-			`probing   ${config.verify ? "on (warn-only)" : "off"} · codex envelope ${config.codexEnvelope ? "on" : "off"}`,
+			`upstream  ${route.endpoint.host}${route.endpoint.path}`,
+			`probing   ${config.verify ? "on (warn-only)" : "off"} · route ${route.id} (${route.api})`,
 			`settings  ${settingsPath()}`,
 		);
 	}

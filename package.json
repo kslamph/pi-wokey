@@ -36,6 +36,7 @@
 		"balance.ts",
 		"config.ts",
 		"models.ts",
+		"routes.ts",
 		"stream.ts",
 		"tui.ts",
 		"verify",

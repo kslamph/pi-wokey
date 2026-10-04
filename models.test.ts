@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { calculateCost } from "@earendil-works/pi-ai";
 import { GPT_MODELS, activeModels, activeSpecs, refreshFromCatalog, toModel } from "./models.ts";
 import { DEFAULT_CONFIG } from "./config.ts";
+import { getRoute } from "./routes.ts";
 
 const snapshot = () => GPT_MODELS.map((m) => ({ ...m }));
 
@@ -101,7 +102,7 @@ describe("cost rates", () => {
 
 describe("config", () => {
 	it("points at the API host, not the website", () => {
-		expect(DEFAULT_CONFIG.baseUrl).toBe("https://api.wokey.ai/v1");
+		expect(getRoute("openai-codex").baseUrl).toBe("https://api.wokey.ai/v1");
 	});
 });
 

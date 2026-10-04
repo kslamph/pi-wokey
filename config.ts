@@ -22,67 +22,11 @@ import { dirname, join } from "node:path";
 
 export interface WokeyConfig {
 	/**
-	 * Relay base URL.
-	 *
-	 * Must be `https://api.wokey.ai/v1`. The bare `wokey.ai` host is the website
-	 * and rejects API traffic with `wrong_gateway_host` (verified 2026-10-03).
-	 */
-	baseUrl: string;
-	/**
-	 * Adapter to use.
-	 *
-	 * `openai-responses`, deliberately NOT `openai-codex-responses`. The codex
-	 * adapter authenticates as ChatGPT itself: it parses the key as a JWT for
-	 * `chatgpt_account_id` and sets `chatgpt-account-id` / `originator` headers. A
-	 * wokey API key is not a JWT, so it dies with "Failed to extract accountId from
-	 * token" — and those headers would be a lie here, since wokey's gateway supplies
-	 * its own subscription credentials. The Codex *envelope* is applied separately,
-	 * see `codexEnvelope`.
-	 */
-	api: "openai-responses" | "openai-completions";
-	/**
 	 * The audited enclave measurement to compare against. Hardcoded on purpose —
 	 * see the file header. Empty string disables the PCR0 gate (everything else
 	 * still runs, and the report says so).
 	 */
 	expectedPcr0: string;
-	/**
-	 * Signed upstream host that must match for a response to count as official.
-	 *
-	 * Measured 2026-10-03 against live gpt-6-luna and gpt-6-sol: both sign
-	 * `chatgpt.com`, NOT `api.openai.com`. Wokey serves the GPT lineup from a paid
-	 * ChatGPT/Codex subscription via `/backend-api/codex/responses` — consistent with
-	 * its pricing page ("from model providers' official APIs *and paid subscriptions*").
-	 * These are not OpenAI API calls.
-	 */
-	expectedHost: string; // convenience alias for expectedHosts[0]; kept for the env override
-	/**
-	 * Signed upstream hosts that are acceptable. Normally exactly one.
-	 *
-	 * Add a second entry only after observing a real proof from that route (see README
-	 * §Adding an upstream). A host is never pre-approved on the strength of a doc claim:
-	 * every host here has been measured, and each is a blocking check, so an unexpected
-	 * route fails loudly and tells you exactly what to look at before you widen it.
-	 *
-	 * Accepting an extra host does not weaken anything else — attestation to the AWS
-	 * Nitro root, the pinned PCR0, the nonce, the response signature and the body hash
-	 * must all still verify. It only stops the route change itself from being flagged.
-	 */
-	expectedHosts: string[];
-	/** Signed upstream paths that are acceptable. */
-	expectedPaths: string[];
-	/**
-	 * Whether byte-exact request binding is achievable through this relay.
-	 *
-	 * "unavailable": wokey rewrites the request body before the enclave sees it, so
-	 * `request_body_sha256` commits to *its* body, never yours. Measured: the rewrite is
-	 * deterministic (byte-identical input → identical signed hash) and order-sensitive,
-	 * but no client-side serialisation reproduces it. The check is then reported as a
-	 * known gap rather than a failure, and the verdict becomes "verified-with-gaps".
-	 * Prompt integrity is still covered indirectly: changing the prompt text changes the
-	 * signed hash, and the served model is read from the integrity-bound response body.
-	 */
-	requestBinding: "verify" | "unavailable";
 	/**
 	 * Header that asks the relay to select a proof transport. The provider strips
 	 * it from outgoing requests and relies on the relay default: a trailing
@@ -90,13 +34,6 @@ export interface WokeyConfig {
 	 * Multipart proof delivery is deliberately not negotiable through this provider.
 	 */
 	proofHeaderName: string;
-	/**
-	 * Shape each request into the Codex Responses envelope the upstream backend
-	 * expects (`store:false`, `instructions`, `text.verbosity`,
-	 * `include:["reasoning.encrypted_content"]`, `prompt_cache_key`, `tool_choice`,
-	 * `parallel_tool_calls`) — see `applyCodexEnvelope` in stream.ts.
-	 */
-	codexEnvelope: boolean;
 	/** Verify on every response (default true). */
 	verify: boolean;
 	/** Surface a notification when a response fails verification (default true). */
@@ -110,14 +47,7 @@ export const PUBLISHED_PCR0 =
 export const PROVIDER_ID = "wokey";
 
 export const DEFAULT_CONFIG: WokeyConfig = {
-	baseUrl: "https://api.wokey.ai/v1",
-	api: "openai-responses",
-	codexEnvelope: true,
 	expectedPcr0: PUBLISHED_PCR0,
-	expectedHost: "chatgpt.com",
-	expectedHosts: ["chatgpt.com"],
-	expectedPaths: ["/backend-api/codex/responses"],
-	requestBinding: "unavailable",
 	proofHeaderName: "x-wokey-tee-proof-mode",
 	verify: true,
 	notifyOnFailure: true,
@@ -138,13 +68,7 @@ export function settingsPath(): string {
 export interface WokeySettings {
 	/** API key for api.wokey.ai. Optional — pi's own auth.json entry for `wokey` also works. */
 	apiKey?: string;
-	baseUrl?: string;
-	api?: WokeyConfig["api"];
 	expectedPcr0?: string;
-	expectedHost?: string;
-	expectedHosts?: string[];
-	expectedPaths?: string[];
-	codexEnvelope?: boolean;
 	verify?: boolean;
 	notifyOnFailure?: boolean;
 }
@@ -152,7 +76,18 @@ export interface WokeySettings {
 export function loadSettings(): WokeySettings {
 	try {
 		const parsed = JSON.parse(readFileSync(settingsPath(), "utf8")) as unknown;
-		return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? (parsed as WokeySettings) : {};
+		if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
+		// Pick only the current schema: keys from the old route/trust overrides
+		// (baseUrl, api, expectedHost(s), expectedPaths, codexEnvelope) are ignored,
+		// never migrated. An old settings file keeps working for preferences; the
+		// key is re-entered through pi auth (Task 6 removes the duplicate store).
+		const raw = parsed as Record<string, unknown>;
+		const out: WokeySettings = {};
+		if (typeof raw.apiKey === "string") out.apiKey = raw.apiKey;
+		if (typeof raw.expectedPcr0 === "string") out.expectedPcr0 = raw.expectedPcr0;
+		if (typeof raw.verify === "boolean") out.verify = raw.verify;
+		if (typeof raw.notifyOnFailure === "boolean") out.notifyOnFailure = raw.notifyOnFailure;
+		return out;
 	} catch {
 		return {}; // missing or malformed is not fatal; defaults still work
 	}
@@ -251,32 +186,15 @@ export function clearPiCredential(): boolean {
 
 export function resolveConfig(overrides?: Partial<WokeyConfig>): WokeyConfig {
 	const settings = loadSettings();
-	// Env overrides exist so the trust anchors can be exercised deliberately in a test
-	// (point the expected host at the wrong value and confirm the check fires) without
-	// editing source. Unset in normal use.
+	// Env override exists so the PCR0 gate can be exercised deliberately in a test
+	// without editing source. Unset in normal use.
 	const envPcr0 = process.env.WOKEY_EXPECTED_PCR0?.trim();
-	const envHost = process.env.WOKEY_EXPECTED_HOST?.trim();
-	const envPath = process.env.WOKEY_EXPECTED_PATH?.trim();
 	return {
 		...DEFAULT_CONFIG,
-		...(settings.baseUrl ? { baseUrl: settings.baseUrl } : {}),
-		...(settings.api ? { api: settings.api } : {}),
-		...(typeof settings.codexEnvelope === "boolean" ? { codexEnvelope: settings.codexEnvelope } : {}),
 		...(typeof settings.verify === "boolean" ? { verify: settings.verify } : {}),
 		...(typeof settings.notifyOnFailure === "boolean" ? { notifyOnFailure: settings.notifyOnFailure } : {}),
-		...(settings.expectedHost ? { expectedHost: settings.expectedHost } : {}),
-		...(settings.expectedHosts?.length
-			? { expectedHosts: settings.expectedHosts }
-			: (settings.expectedHost
-				? { expectedHosts: [settings.expectedHost] }
-				: envHost
-					? { expectedHosts: [envHost] }
-					: {})),
-		...(settings.expectedPaths?.length ? { expectedPaths: settings.expectedPaths } : {}),
 		...(settings.expectedPcr0 ? { expectedPcr0: settings.expectedPcr0.toLowerCase() } : {}),
 		...(envPcr0 ? { expectedPcr0: envPcr0.toLowerCase() } : {}),
-		...(envHost ? { expectedHost: envHost } : {}),
-		...(envPath ? { expectedPaths: [envPath] } : {}),
 		...(process.env.WOKEY_NO_VERIFY === "1" ? { verify: false } : {}),
 		...overrides,
 	};

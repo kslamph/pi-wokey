@@ -16,6 +16,7 @@
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { PROVIDER_ID, resolveApiKey, resolveConfig, type WokeyConfig } from "./config.ts";
+import { getRoute } from "./routes.ts";
 import { fetchBalance, type BalanceInfo } from "./balance.ts";
 import { activeModels, refreshFromCatalog } from "./models.ts";
 import { createWokeyStream } from "./stream.ts";
@@ -83,8 +84,8 @@ export default function wokeyProvider(pi: ExtensionAPI, config: WokeyConfig = re
 
 	pi.registerProvider(PROVIDER_ID, {
 		name: PROVIDER_NAME,
-		baseUrl: config.baseUrl,
-		api: config.api,
+		baseUrl: getRoute("openai-codex").baseUrl,
+		api: getRoute("openai-codex").api,
 		models: activeModels(config),
 		streamSimple,
 	});
@@ -118,7 +119,7 @@ export default function wokeyProvider(pi: ExtensionAPI, config: WokeyConfig = re
 		const key = resolveApiKey();
 		if (!key) return;
 		try {
-			const res = await fetch(`${config.baseUrl}/models`, {
+			const res = await fetch(`${getRoute("openai-codex").baseUrl}/models`, {
 				headers: { authorization: `Bearer ${key}` },
 				signal: AbortSignal.timeout(2000),
 			});
@@ -128,8 +129,8 @@ export default function wokeyProvider(pi: ExtensionAPI, config: WokeyConfig = re
 			if (updated.length > 0) pi.unregisterProvider(PROVIDER_ID);
 			pi.registerProvider(PROVIDER_ID, {
 				name: PROVIDER_NAME,
-				baseUrl: config.baseUrl,
-				api: config.api,
+				baseUrl: getRoute("openai-codex").baseUrl,
+				api: getRoute("openai-codex").api,
 				models: activeModels(config),
 				streamSimple,
 			});

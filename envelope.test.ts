@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { applyCodexEnvelope } from "./stream.ts";
 import { thinkingLevelMapFor, GPT_MODELS } from "./models.ts";
-import { DEFAULT_CONFIG, resolveConfig } from "./config.ts";
+import { resolveConfig } from "./config.ts";
+import { getRoute } from "./routes.ts";
 
 const base = { model: "gpt-6-luna", input: [{ role: "user", content: "hi" }], stream: true, store: false };
 
@@ -90,8 +91,13 @@ describe("thinking level map", () => {
 
 describe("config", () => {
 	it("uses a bearer-key adapter, not the ChatGPT-OAuth codex adapter", () => {
-		expect(DEFAULT_CONFIG.api).toBe("openai-responses");
-		expect(DEFAULT_CONFIG.codexEnvelope).toBe(true);
+		expect(getRoute("openai-codex").api).toBe("openai-responses");
+	});
+
+	it("applies the Codex envelope through the GPT route policy", () => {
+		const out = getRoute("openai-codex").transformPayload({ model: "gpt-6-luna" }, "ck");
+		expect(out.store).toBe(false);
+		expect(out.prompt_cache_key).toBe("ck");
 	});
 });
 

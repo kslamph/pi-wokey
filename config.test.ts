@@ -9,7 +9,7 @@ import { mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { resolveApiKey } from "./config.ts";
+import { DEFAULT_CONFIG, loadSettings, PUBLISHED_PCR0, resolveApiKey, resolveConfig } from "./config.ts";
 
 let dir: string;
 let file: string;
@@ -53,5 +53,43 @@ describe("api key resolution", () => {
 		await new Promise((r) => setTimeout(r, 10));
 		writeFileSync(file, JSON.stringify({ apiKey: "third" }));
 		expect(resolveApiKey()).toBe("third");
+	});
+});
+
+describe("reduced configuration contract", () => {
+	it("keeps only shared verification preferences", () => {
+		expect(Object.keys(DEFAULT_CONFIG).sort()).toEqual([
+			"expectedPcr0",
+			"notifyOnFailure",
+			"proofHeaderName",
+			"verify",
+		]);
+	});
+
+	it("pins the audited PCR0 and the SSE proof transport", () => {
+		expect(DEFAULT_CONFIG.expectedPcr0).toBe(PUBLISHED_PCR0);
+		expect(DEFAULT_CONFIG.proofHeaderName).toBe("x-wokey-tee-proof-mode");
+		expect(resolveConfig().expectedPcr0).toBe(PUBLISHED_PCR0);
+	});
+
+	it("ignores legacy route/trust overrides instead of migrating them", () => {
+		writeFileSync(
+			file,
+			JSON.stringify({
+				apiKey: "k",
+				baseUrl: "https://evil.example/v1",
+				api: "openai-completions",
+				expectedHost: "evil.example",
+				expectedHosts: ["evil.example"],
+				expectedPaths: ["/evil"],
+				codexEnvelope: false,
+				verify: false,
+			}),
+		);
+		// Legacy keys are dropped on read; preferences survive.
+		expect(loadSettings()).toEqual({ apiKey: "k", verify: false });
+		const cfg = resolveConfig();
+		expect(cfg.verify).toBe(false);
+		expect(cfg.expectedPcr0).toBe(PUBLISHED_PCR0);
 	});
 });

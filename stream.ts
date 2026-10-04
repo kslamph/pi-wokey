@@ -27,11 +27,23 @@ import {
 import { getApiProvider } from "@earendil-works/pi-ai/compat";
 import type { WokeyConfig } from "./config.ts";
 import { resolveApiKey } from "./config.ts";
+import { getRoute } from "./routes.ts";
+/** Kept here so existing imports keep working; the implementation lives on the route. */
+export { applyCodexEnvelope } from "./routes.ts";
 import { createProbingFetch, type ProofReport } from "./verify/probe.ts";
 
 export interface WokeyStreamDeps {
 	config: WokeyConfig;
 	onReport(report: ProofReport): void;
+}
+
+/**
+ * Route this stream shapes requests for. Task 1 shim: every model is still a GPT
+ * model, so the openai-codex route is the only one in play. Task 4 selects the
+ * route from the model instead.
+ */
+function streamRoute() {
+	return getRoute("openai-codex");
 }
 
 /** Fallback cache key for calls that carry no session id: one per process. */
@@ -48,26 +60,6 @@ const PROMPT_CACHE_KEY_MAX_LENGTH = 64;
 function clampCacheKey(key: string): string {
 	const chars = Array.from(key);
 	return chars.length <= PROMPT_CACHE_KEY_MAX_LENGTH ? key : chars.slice(0, PROMPT_CACHE_KEY_MAX_LENGTH).join("");
-}
-
-/**
- * Shape the payload into the Codex Responses envelope. Only fills gaps — anything
- * pi already set (notably `reasoning`) is left untouched, so the thinking level
- * the user chose is never overwritten here.
- */
-export function applyCodexEnvelope(payload: unknown, cacheKey: string): Record<string, unknown> {
-	if (!payload || typeof payload !== "object" || Array.isArray(payload)) return {};
-	const body = { ...(payload as Record<string, unknown>) };
-	body.store = false; // the Codex backend rejects store:true outright
-	if (typeof body.instructions !== "string" || body.instructions === "") {
-		body.instructions = "You are a helpful assistant.";
-	}
-	if (!body.text || typeof body.text !== "object") body.text = { verbosity: "low" };
-	if (!Array.isArray(body.include)) body.include = ["reasoning.encrypted_content"];
-	if (typeof body.prompt_cache_key !== "string") body.prompt_cache_key = cacheKey;
-	if (body.tool_choice === undefined) body.tool_choice = "auto";
-	if (body.parallel_tool_calls === undefined) body.parallel_tool_calls = true;
-	return body;
 }
 
 export function createWokeyStream(deps: WokeyStreamDeps) {
@@ -94,24 +86,11 @@ export function createWokeyStream(deps: WokeyStreamDeps) {
 		}
 
 		const upstream = options?.onPayload;
-		const envelope = deps.config.codexEnvelope;
+		const route = streamRoute();
 		// One cache key per conversation: pi supplies the session id, so fall back
 		// to a process-wide key only when it is absent.
 		const cacheKey = clampCacheKey(options?.sessionId ?? processCacheKey);
-
-		// Match pi's `openai-codex-responses` header behavior. Its generic
-		// `openai-responses` adapter would otherwise add `session_id` (underscore),
-		// while Codex-compatible Responses uses the dashed `session-id` header.
-		// Pi has no public thread-id in SimpleStreamOptions, so use its own Codex
-		// provider's mapping: session-id and x-client-request-id both carry the
-		// session/cache key, with no fabricated thread-id.
-		for (const key of Object.keys(headers)) {
-			const lower = key.toLowerCase();
-			if (lower === "session-id" || lower === "session_id" || lower === "x-client-request-id") delete headers[key];
-		}
-		headers["session_id"] = null; // suppress pi-ai's generic adapter default
-		headers["session-id"] = cacheKey;
-		headers["x-client-request-id"] = cacheKey;
+		const routedHeaders = route.transformHeaders(headers, cacheKey);
 
 		return impl.streamSimple(model, context, {
 			...options,
@@ -119,13 +98,13 @@ export function createWokeyStream(deps: WokeyStreamDeps) {
 			// fall back to this extension's settings so `/wokey key <value>` is actually
 			// sufficient on its own and does not require a second copy in auth.json.
 			apiKey: options?.apiKey ?? resolveApiKey(),
-			headers,
+			headers: routedHeaders,
 			fetch: createProbingFetch({ config: deps.config, onReport: deps.onReport, expectedModel: model.id }),
 			// Chain rather than replace, so another extension's instrumentation still runs.
 			onPayload: async (payload, m) => {
 				const replaced = upstream ? await upstream(payload, m) : undefined;
 				const base = replaced ?? payload;
-				return envelope ? applyCodexEnvelope(base, cacheKey) : base;
+				return route.transformPayload(base, cacheKey);
 			},
 		});
 	};

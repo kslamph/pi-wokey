@@ -36,7 +36,7 @@ describe("wokey streamSimple wiring", () => {
 		const prev = process.env.WOKEY_CONFIG;
 		process.env.WOKEY_CONFIG = file;
 		try {
-			const config = resolveConfig({ codexEnvelope: true });
+			const config = resolveConfig();
 			createWokeyStream({ config, onReport: () => {} })(model, context, {});
 
 			const opts = lastOptions();
@@ -69,7 +69,7 @@ describe("wokey streamSimple wiring", () => {
 	});
 
 	it("prefers a caller-supplied key and uses the session id as the cache key", async () => {
-		const config = resolveConfig({ codexEnvelope: true });
+		const config = resolveConfig();
 		createWokeyStream({ config, onReport: () => {} })(model, context, { apiKey: "caller-key", sessionId: "session-xyz" });
 
 		const opts = lastOptions();
@@ -82,7 +82,7 @@ describe("wokey streamSimple wiring", () => {
 	});
 
 	it("sends codex's session-id affinity header carrying the same key as the body", async () => {
-		const config = resolveConfig({ codexEnvelope: true });
+		const config = resolveConfig();
 		createWokeyStream({ config, onReport: () => {} })(model, context, { sessionId: "session-xyz" });
 
 		const opts = lastOptions();
@@ -94,7 +94,7 @@ describe("wokey streamSimple wiring", () => {
 
 	it("clamps a long session id identically in the header and the body", async () => {
 		const long = "s".repeat(80);
-		const config = resolveConfig({ codexEnvelope: true });
+		const config = resolveConfig();
 		createWokeyStream({ config, onReport: () => {} })(model, context, { sessionId: long });
 
 		const opts = lastOptions();
@@ -122,7 +122,7 @@ describe("wokey streamSimple wiring", () => {
 	});
 
 	it("chains a caller-supplied onPayload instead of replacing it", async () => {
-		const config = resolveConfig({ codexEnvelope: false });
+		const config = resolveConfig();
 		const upstream = vi.fn(async (payload: unknown) => ({ ...(payload as object), upstream: true }));
 		createWokeyStream({ config, onReport: () => {} })(model, context, { onPayload: upstream as never });
 
@@ -130,5 +130,7 @@ describe("wokey streamSimple wiring", () => {
 		const out = await (opts.onPayload as (p: unknown, m: unknown) => Promise<Record<string, unknown>>)({ a: 1 }, model);
 		expect(upstream).toHaveBeenCalledOnce();
 		expect(out.upstream).toBe(true);
+		// The GPT route envelope still applies after the caller's hook.
+		expect(out.store).toBe(false);
 	});
 });
