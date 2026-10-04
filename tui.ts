@@ -4,7 +4,7 @@
  * `/wokey` opens a menu, so nothing has to be memorised. The subcommands
  * (`status`, `models`) stay available for scripting and for headless `pi -p`,
  * where there is no UI to draw a menu in. Credentials are pi-managed
- * (`/login wokey`, `WOKEY_API_KEY`) — this extension never touches them, so
+ * (`/login wokey`) — this extension never touches them, so
  * the old `/wokey key` / `/wokey unset` verbs only point at pi auth now.
  */
 
@@ -89,7 +89,7 @@ export function renderStatus(
 		`wokey.ai · ${MARK.verified} ${stats.verified}   ${MARK["verified-with-gaps"]} ${stats.gapped}   ${MARK.failed} ${stats.failed}   ${MARK.unproven} ${stats.unproven}`,
 		"",
 		`balance   ${balance}`,
-		`auth      pi-managed — /login wokey or WOKEY_API_KEY`,
+		`auth      pi-managed — /login wokey`,
 	];
 	if (legacyKey) {
 		lines.push(
@@ -314,7 +314,7 @@ const MENU = [
  */
 function keyGuidance(verb: string): string {
 	return verb === "key"
-		? "wokey: API keys are managed by pi — run /login wokey (or set WOKEY_API_KEY). The old /wokey key store is retired."
+		? "wokey: API keys are managed by pi — run /login wokey. The old /wokey key store is retired."
 		: "wokey: API keys are managed by pi — run /logout wokey to remove the key. The old /wokey unset store is retired.";
 }
 

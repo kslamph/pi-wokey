@@ -72,11 +72,26 @@ describe("native wokey provider identity", () => {
 		process.env.WOKEY_CONFIG = file;
 		try {
 			const p = provider();
-			// Native API-key auth: pi resolves auth.json / WOKEY_API_KEY and
-			// offers `/login wokey`. Absent = ambient-only, never a file write here.
+			// Native API-key auth: pi resolves auth.json and offers `/login wokey`.
+			// Absent = ambient-only, never a file write here.
 			expect(p.auth.apiKey).toBeDefined();
 			expect(p.auth.apiKey?.name).toBe("Wokey API key");
 			expect(typeof p.auth.apiKey?.login).toBe("function");
+			// Ambient auth is deliberately OFF: with no stored credential the
+			// handler must resolve undefined even when WOKEY_API_KEY is exported.
+			const ambient = await p.auth.apiKey?.resolve({
+				ctx: { env: async (name: string) => (name === "WOKEY_API_KEY" ? "sk-from-env" : undefined) },
+				credential: undefined,
+				signal: { throwIfAborted() {} },
+			} as never);
+			expect(ambient).toBeUndefined();
+			// The stored credential still resolves, and wins over any env value.
+			const stored = await p.auth.apiKey?.resolve({
+				ctx: { env: async () => "sk-from-env" },
+				credential: { type: "api_key", key: "sk-from-auth-json" },
+				signal: { throwIfAborted() {} },
+			} as never);
+			expect(stored?.auth.apiKey).toBe("sk-from-auth-json");
 			// Building the provider must not create a custom settings file.
 			const { existsSync } = await import("node:fs");
 			expect(existsSync(file)).toBe(false);

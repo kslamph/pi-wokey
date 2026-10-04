@@ -84,7 +84,7 @@ function buildRoutedOptions<T extends StreamOptions>(
 	const routed: StreamOptions = {
 		...options,
 		// Credentials are pi-managed: pi resolves the key from its own store
-		// (auth.json via `/login wokey`, or `WOKEY_API_KEY`) before calling the
+		// (auth.json via `/login wokey`) before calling the
 		// provider, so whatever it supplies passes through untouched and this
 		// extension never reads a second key store.
 		headers: routedHeaders,

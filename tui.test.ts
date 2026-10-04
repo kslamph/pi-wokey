@@ -169,7 +169,8 @@ describe("renderStatus", () => {
 		expect(text).toContain("$10.79");
 		// Pin the whole pi-managed auth row, not a substring that also
 		// matches "wokey" ("key" alone passes vacuously via "/login wokey").
-		expect(text).toContain("pi-managed — /login wokey or WOKEY_API_KEY");
+		expect(text).toContain("auth      pi-managed — /login wokey");
+		expect(text).not.toContain("WOKEY_API_KEY");
 		expect(text).toContain("chatgpt.com");
 		expect(text).toContain("Upstream host");
 	});

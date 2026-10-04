@@ -111,7 +111,7 @@ describe("/wokey renderer", () => {
 			{ balance: { availableUsd: 10.787384, reservedUsd: 0 }, expanded: true },
 		);
 		expect(text).toContain("wokey.ai ·");
-		expect(text).toContain("key ");
+		expect(text).toContain("auth      pi-managed — /login wokey");
 		expect(text).toContain("$10.79"); // live balance, cents always shown
 		expect(text).toContain("437cbab8c2e5dd11");
 		expect(text).toContain("chatgpt.com");

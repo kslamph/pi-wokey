@@ -58,8 +58,8 @@ export const DEFAULT_CONFIG: WokeyConfig = {
 /**
  * Verification preferences live in `~/.pi/agent/wokey.json`, alongside `auth.json`
  * and the other per-extension state files pi already keeps there. The API key
- * never lives here — credentials are pi-managed (`/login wokey`,
- * `WOKEY_API_KEY`). Nothing is read from the current working directory or a
+ * never lives here — credentials are pi-managed (`/login wokey`). Nothing is
+ * read from the current working directory or a
  * project-local `.env`, so the extension behaves identically no matter where pi
  * was launched from.
  */
@@ -70,7 +70,7 @@ export function settingsPath(): string {
 export interface WokeySettings {
 	/**
 	 * Local verification preferences only. Credentials are pi-managed
-	 * (`/login wokey`, `WOKEY_API_KEY`) and never live here.
+	 * (`/login wokey`) and never live here.
 	 */
 	expectedPcr0?: string;
 	verify?: boolean;
@@ -99,9 +99,9 @@ export function loadSettings(): WokeySettings {
 
 /**
  * Detect a leftover `apiKey` in an old settings file. The value is never read
- * as a credential — credentials come only from pi's registry (`/login wokey`,
- * `WOKEY_API_KEY`). This exists purely so the status panel can tell the user
- * to re-enter the key through pi auth and drop the stale entry.
+ * as a credential — credentials come only from pi's registry (`/login wokey`).
+ * This exists purely so the status panel can tell the user to re-enter the key
+ * through pi auth and drop the stale entry.
  */
 export function hasLegacyApiKey(): boolean {
 	try {

@@ -1,6 +1,6 @@
 /**
  * Configuration holds only shared verification preferences. Credentials live in
- * pi's own store (`/login wokey`, `WOKEY_API_KEY`) — this module never reads or
+ * pi's own store (`/login wokey`) — this module never reads or
  * writes an API key. The one exception is `hasLegacyApiKey`, which detects a
  * leftover `apiKey` in an old settings file purely so the UI can tell the user
  * to re-enter it via `/login wokey`.

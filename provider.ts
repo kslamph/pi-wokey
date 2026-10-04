@@ -3,8 +3,10 @@
  * verified API implementation per route.
  *
  * Auth is pi's `envApiKeyAuth`, so the Wokey key lives where every other pi
- * key lives (`auth.json` via `/login wokey`, or `WOKEY_API_KEY`) — this module
- * never reads or writes a custom settings file. Catalog refresh re-reads the
+ * key lives (`auth.json` via `/login wokey`) — this module never reads or
+ * writes a custom settings file. The env-var list is deliberately empty:
+ * ambient auth is not offered (see `auth`), so the stored credential is the
+ * only way in. Catalog refresh re-reads the
  * live catalog through the GPT relay root and overlays it with the validated
  * `refreshFromCatalog`; any failure keeps the last-known lineup.
  */
@@ -80,7 +82,12 @@ export function createWokeyProvider(options: WokeyProviderOptions): Provider<Wok
 	return createProvider({
 		id: PROVIDER_ID,
 		name: PROVIDER_NAME,
-		auth: { apiKey: envApiKeyAuth("Wokey API key", ["WOKEY_API_KEY"]) },
+		// Empty env list: `login`/`logout` still work (they live in the auth
+		// handler, not the env list), but `WOKEY_API_KEY` is not accepted as a
+		// credential. Ambient auth resolved unreliably for this provider —
+		// `prepareRequest` intermittently threw "Provider is not configured:
+		// wokey" — while the stored-credential path never failed.
+		auth: { apiKey: envApiKeyAuth("Wokey API key", []) },
 		models: activeModels(),
 		fetchModels: refreshWokeyModels,
 		api: {

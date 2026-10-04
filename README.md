@@ -65,7 +65,7 @@ one (warn-only). Illustrative data.*
 |---|---|
 | **Status** | How much balance you have left, the verdict counters, the last exchange with every individual check and its signed upstream tuple, and any catalog warnings from the last refresh. Press `m` to fold out the trust details — the pinned image measurement, the expected upstream per route, and the probing and settings state. Press `r` to refresh. |
 | **Models** | The lineup with model family, API route, current rates, context window, and the exact thinking levels each model supports. |
-| **Credentials** | Managed by pi — `/login wokey` (or `WOKEY_API_KEY`). This extension never reads or writes keys. |
+| **Credentials** | Managed by pi — `/login wokey`. This extension never reads or writes keys. |
 | **Remove credentials** | `/logout wokey`. The old `/wokey unset` command only prints this guidance. |
 
 In a headless run (`pi -p`, or no UI) the subcommands print instead of opening a panel:
@@ -74,8 +74,8 @@ In a headless run (`pi -p`, or no UI) the subcommands print instead of opening a
 /wokey status          /wokey models
 ```
 
-Give pi your wokey key with `/login wokey`, or export `WOKEY_API_KEY` — those are the
-only credential configuration this extension uses. See [Configuration](#configuration)
+Give pi your wokey key with `/login wokey` — that is the only credential
+configuration this extension uses. See [Configuration](#configuration)
 for what else you can change.
 
 Upgrading from an older version? If your `~/.pi/agent/wokey.json` still holds an `apiKey`
@@ -227,8 +227,8 @@ live proof from the new route — never pre-approve a host from documentation al
 ## Configuration
 
 Credentials first: the only credential configuration is `/login wokey` (pi's own
-credential store) or the `WOKEY_API_KEY` environment variable. This extension keeps no
-key of its own.
+credential store). `WOKEY_API_KEY` is deliberately *not* read — ambient auth proved
+unreliable for this provider. This extension keeps no key of its own.
 
 Everything else is optional. Add keys to `~/.pi/agent/wokey.json` (defaults shown):
 
@@ -254,8 +254,10 @@ Test-only environment overrides (unset in normal use): `WOKEY_EXPECTED_PCR0`,
 relay is actually sending:
 
 ```bash
+# The shell var below is only for poking the relay by hand; pi's own auth is unaffected.
+export WOKEY_KEY=<your wokey key>
 curl -sN https://api.wokey.ai/v1/responses \
-  -H "authorization: Bearer $WOKEY_API_KEY" -H 'content-type: application/json' \
+  -H "authorization: Bearer $WOKEY_KEY" -H 'content-type: application/json' \
   -d '{"model":"gpt-6.1-sol","input":"hi","stream":true}' | tail -5
 ```
 
@@ -279,8 +281,8 @@ tells you while a legacy key is still present.
 signed request hash cannot match a client-side value. Everything else still verifies.
 
 **"No API key found" even though a key is set.** The key lives somewhere pi does not
-read (for example a leftover `apiKey` in `wokey.json`). Run `/login wokey` or export
-`WOKEY_API_KEY` and try again.
+read (for example a leftover `apiKey` in `wokey.json`), or you only exported
+`WOKEY_API_KEY`, which this extension does not read. Run `/login wokey` and try again.
 
 ## Vendored code
 
