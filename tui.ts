@@ -55,8 +55,9 @@ export interface StatusOptions {
 	/** Last catalog-overlay warnings; rendered as their own section. */
 	warnings?: string[];
 	/**
-	 * A leftover `apiKey` in an old `wokey.json` was detected. Defaults to a
-	 * live check; pass explicitly in tests.
+	 * A leftover `apiKey` in an old `wokey.json` was detected. Set by the
+	 * status entry point (one `hasLegacyApiKey()` read per panel open);
+	 * defaults to false so the renderer stays pure. Pass explicitly in tests.
 	 */
 	legacyKey?: boolean;
 }
@@ -79,7 +80,7 @@ export function renderStatus(
 	last: ProofReport | undefined,
 	opts: StatusOptions = {},
 ): string {
-	const legacyKey = opts.legacyKey ?? hasLegacyApiKey();
+	const legacyKey = opts.legacyKey ?? false;
 	const warnings = opts.warnings ?? [];
 	const balance = opts.balance
 		? `${usd(opts.balance.availableUsd)} available${opts.balance.reservedUsd > 0 ? ` · ${usd(opts.balance.reservedUsd)} reserved` : ""}`
@@ -269,6 +270,9 @@ function infoPanel(
  */
 function openStatus(ctx: CommandContext, deps: MenuDeps): Promise<void> {
 	void deps.syncBalance();
+	// One disk read per panel open, not per render: renderStatus is pure and
+	// the fold toggle re-renders without touching disk.
+	const legacyKey = hasLegacyApiKey();
 	return infoPanel(
 		ctx,
 		"wokey.ai · status",
@@ -277,6 +281,7 @@ function openStatus(ctx: CommandContext, deps: MenuDeps): Promise<void> {
 				balance: deps.balance(),
 				expanded,
 				warnings: deps.warnings(),
+				legacyKey,
 			}),
 		{
 			// Catalog and balance reload together, so `r` cannot leave the price
@@ -328,6 +333,7 @@ export async function runMenu(deps: MenuDeps, args: string[], ctx: CommandContex
 			renderStatus(deps.config(), deps.stats(), deps.last(), {
 				balance: deps.balance(),
 				warnings: deps.warnings(),
+				legacyKey: hasLegacyApiKey(),
 			}),
 		);
 	};

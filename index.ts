@@ -117,7 +117,7 @@ export default function wokeyProvider(pi: ExtensionAPI, config: WokeyConfig = re
 		notify(`wokey: ${PROVIDER_NAME} ready — ${provider.getModels().length} models, proof probing ${config.verify ? "on" : "off"} (run /wokey for status)`);
 		// Fire-and-forget through the native refresh path: a hung relay catalog
 		// call must not block session start, and a failure keeps the baked-in lineup.
-		void ctx.modelRegistry.refresh({ providers: [PROVIDER_ID] });
+		void ctx.modelRegistry.refresh({ providers: [PROVIDER_ID] }).catch(() => {});
 	});
 
 	/**
