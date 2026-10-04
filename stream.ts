@@ -99,7 +99,19 @@ export function createWokeyStream(deps: WokeyStreamDeps) {
 			// sufficient on its own and does not require a second copy in auth.json.
 			apiKey: options?.apiKey ?? resolveApiKey(),
 			headers: routedHeaders,
-			fetch: createProbingFetch({ config: deps.config, onReport: deps.onReport, expectedModel: model.id }),
+			// The probe verifies against this route's policy. When verification is off
+			// there is nothing to wrap, so pi (or the caller) supplies the transport.
+			// Task 4 selects the route from the model instead of this GPT shim.
+			...(deps.config.verify
+				? {
+						fetch: createProbingFetch({
+							policy: { expectedPcr0: deps.config.expectedPcr0, endpoint: route.endpoint, requestBinding: route.requestBinding },
+							onReport: deps.onReport,
+							expectedModel: model.id,
+							extractServedModel: route.extractServedModel,
+						}),
+					}
+				: {}),
 			// Chain rather than replace, so another extension's instrumentation still runs.
 			onPayload: async (payload, m) => {
 				const replaced = upstream ? await upstream(payload, m) : undefined;

@@ -14,8 +14,9 @@ import { createServer, type Server } from "node:http";
 import { createHash, generateKeyPairSync, sign as nodeSign } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { resolveConfig, PUBLISHED_PCR0, type WokeyConfig } from "./config.ts";
+import { getRoute } from "./routes.ts";
 import { buildV2Statement } from "./verify/signing.ts";
-import { createProbingFetch, type ProofReport } from "./verify/probe.ts";
+import { createProbingFetch, type ProofReport, type VerificationPolicy } from "./verify/probe.ts";
 import { WOKEY_SSE_TRANSPORT_KEEPALIVE_V1, type AttestationVerifier, type TeeProofWire } from "./verify/tee-verify-core.ts";
 
 const { publicKey, privateKey } = generateKeyPairSync("ed25519");
@@ -108,13 +109,15 @@ afterAll(async () => {
 	await new Promise<void>((r) => server.close(() => r()));
 });
 
-async function run(body: string, config: WokeyConfig = CONFIG): Promise<{ clientBytes: Buffer; report: ProofReport }> {
+async function run(body: string, policyOver: Partial<VerificationPolicy> = {}): Promise<{ clientBytes: Buffer; report: ProofReport }> {
 	let report: ProofReport | undefined;
+	const route = getRoute("openai-codex");
 	const probing = createProbingFetch({
-		config,
+		policy: { expectedPcr0: CONFIG.expectedPcr0, endpoint: route.endpoint, requestBinding: route.requestBinding, ...policyOver },
 		onReport: (r) => {
 			report = r;
 		},
+		extractServedModel: route.extractServedModel,
 		attestationVerifier: stubAttestation(),
 	});
 	const res = await probing(`${origin}/v1/responses`, {
@@ -163,6 +166,22 @@ describe("probing fetch, end to end", () => {
 			if (c.name === "Request binding") expect(c.ok).toBe(false); // documented gap
 			else expect(c.ok, `${c.name}: ${c.detail}`).toBe(true);
 		}
+	});
+
+	it("reports a strict verified when the route policy verifies request binding", async () => {
+		const upstream = 'event: response.completed\ndata: {"response":{"model":"gpt-6.1-sol","status":"completed"}}\n\n';
+		const proof = signProof(Buffer.from(upstream, "utf8"), Buffer.from(REQUEST_BODY, "utf8"));
+		reply = () => ({
+			contentType: "text/event-stream",
+			chunks: [upstream, `event: tee.proof\ndata: ${JSON.stringify(proof)}\n\n`],
+		});
+
+		// Same byte-exact exchange, but the policy says binding is achievable: the
+		// gap lifts and the run is strictly verified. This pins that the gap is
+		// per-route policy, not hard-coded.
+		const { report } = await run(REQUEST_BODY, { requestBinding: "verify" });
+		expect(report.checks.find((c) => c.name === "Request binding")?.ok).toBe(true);
+		expect(report.status).toBe("verified");
 	});
 
 	it("flags a tampered response body while still delivering it (warn-only)", async () => {
