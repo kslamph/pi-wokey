@@ -1,6 +1,6 @@
-import { chmodSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 
 /**
  * Configuration + trust anchors for the wokey.ai provider.
@@ -56,10 +56,12 @@ export const DEFAULT_CONFIG: WokeyConfig = {
 // ── settings store ─────────────────────────────────────────────────────────────
 
 /**
- * Settings and the API key live in `~/.pi/agent/wokey.json`, alongside `auth.json`
- * and the other per-extension state files pi already keeps there. Nothing is read
- * from the current working directory or a project-local `.env`, so the extension
- * behaves identically no matter where pi was launched from.
+ * Verification preferences live in `~/.pi/agent/wokey.json`, alongside `auth.json`
+ * and the other per-extension state files pi already keeps there. The API key
+ * never lives here — credentials are pi-managed (`/login wokey`,
+ * `WOKEY_API_KEY`). Nothing is read from the current working directory or a
+ * project-local `.env`, so the extension behaves identically no matter where pi
+ * was launched from.
  */
 export function settingsPath(): string {
 	return process.env.WOKEY_CONFIG ?? join(homedir(), ".pi", "agent", "wokey.json");
@@ -93,13 +95,6 @@ export function loadSettings(): WokeySettings {
 	} catch {
 		return {}; // missing or malformed is not fatal; defaults still work
 	}
-}
-
-export function saveSettings(settings: WokeySettings): void {
-	const path = settingsPath();
-	mkdirSync(dirname(path), { recursive: true });
-	writeFileSync(path, `${JSON.stringify(settings, null, 2)}\n`, { mode: 0o600 });
-	chmodSync(path, 0o600); // a legacy file may still hold an API key until it is removed
 }
 
 /**

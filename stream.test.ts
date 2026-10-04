@@ -290,3 +290,68 @@ describe("createVerifiedStreams deferred passthrough", () => {
 		expect(streams.cancelDeferred).toBeUndefined();
 	});
 });
+
+describe("cross-protocol proof-wrapper parity", () => {
+	const cases: { routeId: "openai-codex" | "anthropic-direct"; model: { id: string } }[] = [
+		{ routeId: "openai-codex", model },
+		{ routeId: "anthropic-direct", model: claudeModel },
+	];
+
+	it("installs each route's own endpoint tuple, expected model, and served-model reader on both stream and streamSimple", () => {
+		for (const c of cases) {
+			const spy = vi.spyOn(probeModule, "createProbingFetch");
+			try {
+				const config = resolveConfig();
+				const route = getRoute(c.routeId);
+				const native = mockNative();
+				const streams = createVerifiedStreams(route, config, () => {}, native as never);
+				streams.stream(c.model as never, context, {});
+				streams.streamSimple(c.model as never, context, {});
+
+				expect(spy).toHaveBeenCalledTimes(2);
+				for (const call of spy.mock.calls) {
+					expect(call[0].policy.endpoint).toEqual(route.endpoint);
+					expect(call[0].expectedModel).toBe(c.model.id);
+					expect(call[0].extractServedModel).toBe(route.extractServedModel);
+				}
+			} finally {
+				spy.mockRestore();
+			}
+		}
+		// ...and the two tuples are actually different policies, not one shared.
+		expect(getRoute("openai-codex").endpoint).not.toEqual(getRoute("anthropic-direct").endpoint);
+	});
+
+	it("keeps Anthropic tool calls, thinking signatures, and cache usage byte-identical", async () => {
+		const native = mockNative();
+		createVerifiedStreams(getRoute("anthropic-direct"), resolveConfig(), () => {}, native as never).streamSimple(claudeModel, context, {});
+
+		const opts = nativeOptions(native, "streamSimple");
+		const payload = {
+			model: "claude-opus-5-5",
+			max_tokens: 1024,
+			messages: [{ role: "user", content: "hi" }],
+			tools: [{ name: "get_time", description: "d", input_schema: { type: "object", properties: {} } }],
+			thinking: { type: "enabled", budget_tokens: 10000 },
+		};
+		const out = await (opts.onPayload as (p: unknown, m: unknown) => Promise<Record<string, unknown>>)(payload, claudeModel);
+		// No envelope, no renames: thinking signatures and tool blocks reach the
+		// adapter exactly as pi built them, so verification strips nothing semantic.
+		expect(out).toEqual(payload);
+		expect(out).not.toBe(payload);
+	});
+
+	it("keeps caller-set GPT reasoning effort through the Codex envelope", async () => {
+		const native = mockNative();
+		createVerifiedStreams(getRoute("openai-codex"), resolveConfig(), () => {}, native as never).streamSimple(model, context, {});
+
+		const opts = nativeOptions(native, "streamSimple");
+		const out = await (opts.onPayload as (p: unknown, m: unknown) => Promise<Record<string, unknown>>)(
+			{ model: "gpt-6-luna", reasoning: { effort: "xhigh" } },
+			model,
+		);
+		// The envelope fills gaps only; the chosen thinking level survives.
+		expect(out.reasoning).toEqual({ effort: "xhigh" });
+		expect(out.store).toBe(false);
+	});
+});

@@ -324,3 +324,35 @@ describe("active lineup", () => {
 		expect(specs["gpt-6-luna"]).toEqual(["none", "low", "medium", "high", "xhigh", "max"]);
 	});
 });
+
+describe("cross-protocol model switch", () => {
+	it("switches GPT→Claude API, base URL, and route policy without changing provider ID", () => {
+		const gpt = toModel(activeSpecs().find((s) => s.id === "gpt-6-luna")!);
+		const claude = toModel(activeSpecs().find((s) => s.id === "claude-opus-5-5")!);
+		expect(gpt.provider).toBe("wokey");
+		expect(claude.provider).toBe("wokey");
+		expect(gpt.api).toBe("openai-responses");
+		expect(claude.api).toBe("anthropic-messages");
+		expect(gpt.baseUrl).toBe("https://api.wokey.ai/v1");
+		expect(claude.baseUrl).toBe("https://api.wokey.ai");
+		// Policy follows the model: the exact measured endpoint tuples differ.
+		expect(getRoute("openai-codex").endpoint).toEqual({ host: "chatgpt.com", path: "/backend-api/codex/responses", method: "POST" });
+		expect(getRoute("anthropic-direct").endpoint).toEqual({ host: "api.anthropic.com", path: "/v1/messages", method: "POST" });
+	});
+
+	it("prices Anthropic cache reads through pi's native usage/cost model", () => {
+		const opus = toModel(activeSpecs().find((s) => s.id === "claude-opus-5-5")!);
+		const usage = {
+			input: 7,
+			output: 59,
+			cacheRead: 2048,
+			cacheWrite: 0,
+			totalTokens: 2114,
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+		};
+		calculateCost(opus as never, usage);
+		// The cache-read fixture's 2048 tokens turn into dollars at 0.03/1M.
+		expect(usage.cost.cacheRead).toBeCloseTo((0.03 * 2048) / 1_000_000, 12);
+		expect(usage.cost.total).toBeCloseTo((0.6 * 7 + 3.0 * 59 + 0.03 * 2048) / 1_000_000, 12);
+	});
+});

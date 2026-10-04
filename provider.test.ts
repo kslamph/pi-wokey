@@ -109,6 +109,25 @@ describe("native wokey provider identity", () => {
 		expect(openAIStreams.streamSimple).not.toHaveBeenCalled();
 	});
 
+	it("serves a GPT→Claude switch from one provider id with one pi-managed credential", () => {
+		const p = provider();
+		const models = p.getModels();
+		const gpt = models.find((m) => m.id === "gpt-6-luna")!;
+		const claude = models.find((m) => m.id === "claude-opus-5-5")!;
+		// One provider, one auth: the switch changes adapter and relay root,
+		// never the provider id and never the credential (no re-login).
+		expect(gpt.provider).toBe("wokey");
+		expect(claude.provider).toBe("wokey");
+		expect(p.auth.apiKey?.name).toBe("Wokey API key");
+		expect(gpt.api).toBe("openai-responses");
+		expect(claude.api).toBe("anthropic-messages");
+		expect(gpt.baseUrl).not.toBe(claude.baseUrl);
+		p.stream(gpt, context, {});
+		p.stream(claude, context, {});
+		expect(openAIStreams.stream).toHaveBeenCalledOnce();
+		expect(anthropicStreams.stream).toHaveBeenCalledOnce();
+	});
+
 	it("surfaces an unsupported model api as a provider stream error, never an OpenAI fallback", async () => {
 		const p = provider();
 		const other = { provider: "wokey", id: "gpt-5.5", api: "openai-completions" } as never;

@@ -167,7 +167,9 @@ describe("renderStatus", () => {
 	it("keeps counters, balance, key and the last exchange when collapsed", () => {
 		const text = renderStatus(config, stats, LAST, { balance: BALANCE });
 		expect(text).toContain("$10.79");
-		expect(text).toContain("key");
+		// Pin the whole pi-managed auth row, not a substring that also
+		// matches "wokey" ("key" alone passes vacuously via "/login wokey").
+		expect(text).toContain("pi-managed — /login wokey or WOKEY_API_KEY");
 		expect(text).toContain("chatgpt.com");
 		expect(text).toContain("Upstream host");
 	});
