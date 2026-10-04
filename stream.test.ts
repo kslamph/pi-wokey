@@ -1,142 +1,25 @@
 /**
- * Wiring tests for `createWokeyStream` — the part of the product the probe
- * depends on. `applyCodexEnvelope` alone is pure and already covered; what was
- * untested is that the probing fetch, the proof-mode header and the apiKey
- * fallback actually reach pi's adapter, and that the envelope runs through the
- * chained `onPayload`.
+ * Wiring tests for `createVerifiedStreams` — the per-route verified wrappers
+ * behind the native Wokey provider. `applyCodexEnvelope` alone is pure and
+ * already covered; what is tested here is that the probing fetch, the
+ * proof-mode header and the apiKey fallback actually reach pi's adapter, and
+ * that the envelope runs through the chained `onPayload`.
+ *
+ * (The legacy single-stream `createWokeyStream` was retired with the native
+ * provider registration; its wiring is now covered through these wrappers.)
  */
 
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { beforeEach, describe, expect, it, vi } from "vitest";
-
-const { streamSimple } = vi.hoisted(() => ({ streamSimple: vi.fn((..._args: unknown[]) => ({}) as never) }));
-vi.mock("@earendil-works/pi-ai/compat", () => ({ getApiProvider: () => ({ streamSimple }) }));
+import { describe, expect, it, vi } from "vitest";
 
 import { resolveConfig } from "./config.ts";
 import { getRoute } from "./routes.ts";
-import { createVerifiedStreams, createWokeyStream } from "./stream.ts";
+import { createVerifiedStreams } from "./stream.ts";
 import * as probeModule from "./verify/probe.ts";
 
 const model = { id: "gpt-6-luna", api: "openai-responses" } as never;
 const claudeModel = { id: "claude-opus-5-5", api: "anthropic-messages" } as never;
 const context = { messages: [] } as never;
 
-/** Last options object handed to the fake adapter. */
-function lastOptions(): Record<string, unknown> {
-	const call = streamSimple.mock.calls.at(-1)!;
-	return call[2] as Record<string, unknown>;
-}
-
-describe("wokey streamSimple wiring", () => {
-	beforeEach(() => streamSimple.mockClear());
-
-	it("injects the probing fetch, the proof-mode header and the resolved key", async () => {
-		const dir = mkdtempSync(join(tmpdir(), "wokey-stream-"));
-		const file = join(dir, "wokey.json");
-		writeFileSync(file, JSON.stringify({ apiKey: "file-key" }));
-		const prev = process.env.WOKEY_CONFIG;
-		process.env.WOKEY_CONFIG = file;
-		try {
-			const config = resolveConfig();
-			createWokeyStream({ config, onReport: () => {} })(model, context, {});
-
-			const opts = lastOptions();
-			expect(typeof opts.fetch).toBe("function");
-			expect(opts.apiKey).toBe("file-key");
-			// The provider drives the proof transport: it never asks for multipart.
-			expect((opts.headers as Record<string, string>)[config.proofHeaderName]).toBeUndefined();
-
-			// The chained onPayload must still apply the Codex envelope.
-			const out = (await (opts.onPayload as (p: unknown, m: unknown) => Promise<Record<string, unknown>>)({ model: "gpt-6-luna" }, model));
-			expect(out.store).toBe(false);
-			expect(out.instructions).toBe("You are a helpful assistant.");
-			expect(typeof out.prompt_cache_key).toBe("string");
-		} finally {
-			if (prev === undefined) delete process.env.WOKEY_CONFIG;
-			else process.env.WOKEY_CONFIG = prev;
-			rmSync(dir, { recursive: true, force: true });
-		}
-	});
-
-	it("strips a caller-supplied proof-mode header so the relay stays on SSE", () => {
-		const config = resolveConfig();
-		createWokeyStream({ config, onReport: () => {} })(model, context, {
-			headers: { "X-Wokey-Tee-Proof-Mode": "multipart", "x-other": "keep" } as never,
-		});
-
-		const headers = lastOptions().headers as Record<string, string>;
-		expect(headers["X-Wokey-Tee-Proof-Mode"]).toBeUndefined();
-		expect(headers["x-other"]).toBe("keep");
-	});
-
-	it("prefers a caller-supplied key and uses the session id as the cache key", async () => {
-		const config = resolveConfig();
-		createWokeyStream({ config, onReport: () => {} })(model, context, { apiKey: "caller-key", sessionId: "session-xyz" });
-
-		const opts = lastOptions();
-		expect(opts.apiKey).toBe("caller-key");
-
-		const onPayload = opts.onPayload as (p: unknown, m: unknown) => Promise<Record<string, unknown>>;
-		expect((await onPayload({ a: 1 }, model)).prompt_cache_key).toBe("session-xyz");
-		// Stable across turns of the same conversation.
-		expect((await onPayload({ a: 2 }, model)).prompt_cache_key).toBe("session-xyz");
-	});
-
-	it("sends codex's session-id affinity header carrying the same key as the body", async () => {
-		const config = resolveConfig();
-		createWokeyStream({ config, onReport: () => {} })(model, context, { sessionId: "session-xyz" });
-
-		const opts = lastOptions();
-		// Codex sends prompt_cache_key as the `session-id` header; both must be the same string.
-		expect((opts.headers as Record<string, string>)["session-id"]).toBe("session-xyz");
-		const onPayload = opts.onPayload as (p: unknown, m: unknown) => Promise<Record<string, unknown>>;
-		expect((await onPayload({ a: 1 }, model)).prompt_cache_key).toBe("session-xyz");
-	});
-
-	it("clamps a long session id identically in the header and the body", async () => {
-		const long = "s".repeat(80);
-		const config = resolveConfig();
-		createWokeyStream({ config, onReport: () => {} })(model, context, { sessionId: long });
-
-		const opts = lastOptions();
-		const header = (opts.headers as Record<string, string>)["session-id"];
-		const onPayload = opts.onPayload as (p: unknown, m: unknown) => Promise<Record<string, unknown>>;
-		const body = (await onPayload({ a: 1 }, model)).prompt_cache_key;
-
-		// pi truncates the body key at 64 chars; the header must match, not exceed it.
-		expect(header).toBe("s".repeat(64));
-		expect(header).toBe(body);
-	});
-
-	it("matches pi's Codex headers and suppresses the generic underscore header", () => {
-		const config = resolveConfig();
-		createWokeyStream({ config, onReport: () => {} })(model, context, {
-			sessionId: "session-xyz",
-			headers: { "Session-Id": "caller-wins", session_id: "generic-adapter" } as never,
-		});
-
-		const headers = lastOptions().headers as Record<string, string | null>;
-		expect(headers["session-id"]).toBe("session-xyz");
-		expect(headers["x-client-request-id"]).toBe("session-xyz");
-		expect(headers["session_id"]).toBeNull();
-		expect(headers["Session-Id"]).toBeUndefined();
-	});
-
-	it("chains a caller-supplied onPayload instead of replacing it", async () => {
-		const config = resolveConfig();
-		const upstream = vi.fn(async (payload: unknown) => ({ ...(payload as object), upstream: true }));
-		createWokeyStream({ config, onReport: () => {} })(model, context, { onPayload: upstream as never });
-
-		const opts = lastOptions();
-		const out = await (opts.onPayload as (p: unknown, m: unknown) => Promise<Record<string, unknown>>)({ a: 1 }, model);
-		expect(upstream).toHaveBeenCalledOnce();
-		expect(out.upstream).toBe(true);
-		// The GPT route envelope still applies after the caller's hook.
-		expect(out.store).toBe(false);
-	});
-});
 /** Fresh mock of one route's native pi API implementation. */
 function mockNative() {
 	return {
@@ -372,5 +255,32 @@ describe("createVerifiedStreams (Anthropic route)", () => {
 		expect(() => streams.stream(model, context, {})).toThrowError(/unsupported.*openai-responses/i);
 		expect(native.stream).not.toHaveBeenCalled();
 		expect(native.streamSimple).not.toHaveBeenCalled();
+	});
+});
+
+describe("createVerifiedStreams deferred passthrough", () => {
+	const handle = { id: "deferred-1" } as never;
+
+	it("passes fetchDeferred/cancelDeferred through with the same API check", async () => {
+		const native = {
+			...mockNative(),
+			fetchDeferred: vi.fn((..._args: unknown[]) => ({}) as never),
+			cancelDeferred: vi.fn(async (..._args: unknown[]) => {}),
+		};
+		const streams = createVerifiedStreams(getRoute("openai-codex"), resolveConfig(), () => {}, native as never);
+		streams.fetchDeferred!(model, handle, {});
+		await streams.cancelDeferred!(model, handle, {});
+		expect(native.fetchDeferred).toHaveBeenCalledOnce();
+		expect(native.cancelDeferred).toHaveBeenCalledOnce();
+		expect(() => streams.fetchDeferred!(claudeModel, handle, {})).toThrowError(/unsupported.*anthropic-messages/i);
+		await expect(streams.cancelDeferred!(claudeModel, handle, {})).rejects.toThrowError(/unsupported.*anthropic-messages/i);
+		expect(native.fetchDeferred).toHaveBeenCalledOnce();
+		expect(native.cancelDeferred).toHaveBeenCalledOnce();
+	});
+
+	it("omits deferred entry points when the native implementation lacks them", () => {
+		const streams = createVerifiedStreams(getRoute("openai-codex"), resolveConfig(), () => {}, mockNative() as never);
+		expect(streams.fetchDeferred).toBeUndefined();
+		expect(streams.cancelDeferred).toBeUndefined();
 	});
 });

@@ -5,9 +5,7 @@
  */
 
 import { describe, expect, it, vi } from "vitest";
-import { fetchBalance, parseBalance } from "./balance.ts";
-import { resolveConfig } from "./config.ts";
-import { getRoute } from "./routes.ts";
+import { fetchBalance, parseBalance, WOKEY_API_ROOT } from "./balance.ts";
 
 /** The exact payload the live endpoint returned, trimmed to what we read. */
 const LIVE = { userId: "2690", availableUsd: 10.787384, reservedUsd: 0 };
@@ -60,52 +58,65 @@ describe("parseBalance", () => {
 });
 
 describe("fetchBalance", () => {
-	const config = resolveConfig();
+	it("uses the stable relay root, never a per-route model baseUrl", () => {
+		expect(WOKEY_API_ROOT).toBe("https://api.wokey.ai/v1");
+	});
 
-	it("asks the balance endpoint under the route's relay base URL", async () => {
+	it("asks the balance endpoint under the given root with Bearer auth", async () => {
 		const spy = stubFetch(() => ok(LIVE));
-		await fetchBalance(config, "sk-test");
+		await fetchBalance(WOKEY_API_ROOT, "sk-test");
 		expect(spy).toHaveBeenCalledWith(
-			`${getRoute("openai-codex").baseUrl}/dashboard/balance`,
+			"https://api.wokey.ai/v1/dashboard/balance",
 			expect.objectContaining({ headers: { authorization: "Bearer sk-test" } }),
 		);
 	});
 
 	it("returns the parsed balance on success", async () => {
 		stubFetch(() => ok(LIVE));
-		await expect(fetchBalance(config, "sk-test")).resolves.toEqual({ availableUsd: 10.787384, reservedUsd: 0 });
+		await expect(fetchBalance(WOKEY_API_ROOT, "sk-test")).resolves.toEqual({ availableUsd: 10.787384, reservedUsd: 0 });
 	});
 
 	it("does not call out at all when no key is set", async () => {
 		const spy = stubFetch(() => ok(LIVE));
-		await expect(fetchBalance(config, undefined)).resolves.toBeUndefined();
+		await expect(fetchBalance(WOKEY_API_ROOT, undefined)).resolves.toBeUndefined();
 		expect(spy).not.toHaveBeenCalled();
 	});
 
 	it("gives up quietly on a non-2xx reply", async () => {
 		stubFetch(() => ({ ok: false, status: 401, json: async () => ({}) }) as unknown as Response);
-		await expect(fetchBalance(config, "sk-test")).resolves.toBeUndefined();
+		await expect(fetchBalance(WOKEY_API_ROOT, "sk-test")).resolves.toBeUndefined();
 	});
 
 	it("gives up quietly when the body is not JSON", async () => {
 		stubFetch(() => ({ ok: true, status: 200, json: async () => Promise.reject(new Error("not json")) }) as unknown as Response);
-		await expect(fetchBalance(config, "sk-test")).resolves.toBeUndefined();
+		await expect(fetchBalance(WOKEY_API_ROOT, "sk-test")).resolves.toBeUndefined();
 	});
 
 	it("gives up quietly when the relay hangs", async () => {
 		stubFetch(() => Promise.reject(new DOMException("timeout", "TimeoutError")));
-		await expect(fetchBalance(config, "sk-test")).resolves.toBeUndefined();
+		await expect(fetchBalance(WOKEY_API_ROOT, "sk-test")).resolves.toBeUndefined();
 	});
 
 	it("gives up quietly when the payload is not a balance", async () => {
 		stubFetch(() => ok({ error: { code: "invalid_api_key" } }));
-		await expect(fetchBalance(config, "sk-test")).resolves.toBeUndefined();
+		await expect(fetchBalance(WOKEY_API_ROOT, "sk-test")).resolves.toBeUndefined();
 	});
 
 	it("bounds the wait so a stalled relay cannot hang the panel", async () => {
 		const spy = stubFetch(() => ok(LIVE));
-		await fetchBalance(config, "sk-test");
+		await fetchBalance(WOKEY_API_ROOT, "sk-test");
 		// A timeout signal is what keeps "open the panel" fast on a bad network.
-		expect(spy).toHaveBeenCalledWith(expect.any(String), expect.objectContaining({ signal: expect.anything() }));
+		expect(spy).toHaveBeenCalledWith(expect.any(String), expect.objectContaining({ signal: expect.any(AbortSignal) }));
+	});
+
+	it("honors a caller abort signal alongside the timeout", async () => {
+		const spy = stubFetch(() => ok(LIVE));
+		const controller = new AbortController();
+		await fetchBalance(WOKEY_API_ROOT, "sk-test", controller.signal);
+		const signal = spy.mock.calls[0]?.[1]?.signal;
+		expect(signal).toBeInstanceOf(AbortSignal);
+		expect(signal?.aborted).toBe(false);
+		controller.abort();
+		expect(signal?.aborted).toBe(true);
 	});
 });

@@ -20,33 +20,21 @@ import { randomUUID } from "node:crypto";
 import {
 	type Api,
 	type AssistantMessageEventStream,
+	type DeferredCancelOptions,
+	type DeferredFetchOptions,
+	type DeferredHandle,
 	type Model,
 	type ProviderStreams,
 	type SimpleStreamOptions,
 	type StreamOptions,
 	type TranscriptContext,
 } from "@earendil-works/pi-ai";
-import { getApiProvider } from "@earendil-works/pi-ai/compat";
 import type { WokeyConfig } from "./config.ts";
 import { resolveApiKey } from "./config.ts";
-import { getRoute, type WokeyRoute } from "./routes.ts";
+import { type WokeyRoute } from "./routes.ts";
 /** Kept here so existing imports keep working; the implementation lives on the route. */
 export { applyCodexEnvelope } from "./routes.ts";
 import { createProbingFetch, type ProofReport } from "./verify/probe.ts";
-
-export interface WokeyStreamDeps {
-	config: WokeyConfig;
-	onReport(report: ProofReport): void;
-}
-
-/**
- * Route this stream shapes requests for. Task 1 shim: every model is still a GPT
- * model, so the openai-codex route is the only one in play. Task 4 selects the
- * route from the model instead.
- */
-function streamRoute() {
-	return getRoute("openai-codex");
-}
 
 /** Fallback cache key for calls that carry no session id: one per process. */
 const processCacheKey = randomUUID();
@@ -86,7 +74,7 @@ function buildRoutedOptions<T extends StreamOptions>(
 		if (key.toLowerCase() === config.proofHeaderName.toLowerCase()) delete headers[key];
 	}
 
-	const upstream = (options as StreamOptions | undefined)?.onPayload;
+	const upstream = options?.onPayload;
 	// One cache key per conversation: pi supplies the session id, so fall back
 	// to a process-wide key only when it is absent.
 	const cacheKey = clampCacheKey(options?.sessionId ?? processCacheKey);
@@ -123,32 +111,16 @@ function buildRoutedOptions<T extends StreamOptions>(
 	return routed as T;
 }
 
-export function createWokeyStream(deps: WokeyStreamDeps) {
-	const resolveImpl = (model: Model<Api>) => {
-		const impl = getApiProvider(model.api) ?? getApiProvider("openai-responses") ?? getApiProvider("openai-completions");
-		if (!impl) throw new Error("wokey: no openai-responses / openai-completions API provider registered in pi");
-		return impl;
-	};
-
-	return function wokeyStreamSimple(
-		model: Model<Api>,
-		context: TranscriptContext,
-		options?: SimpleStreamOptions,
-	): AssistantMessageEventStream {
-		const impl = resolveImpl(model);
-		// Task 4 selects the route from the model instead of this GPT shim.
-		return impl.streamSimple(model, context, buildRoutedOptions(streamRoute(), deps.config, deps.onReport, model, options));
-	};
-}
-
 /**
  * Wrap one route's native pi API implementation with verification.
  *
  * The caller supplies the already-resolved native `stream`/`streamSimple` pair
- * for `route.api` (Task 5 resolves these from pi's API registry per route); the
- * wrapper shapes requests through the route policy and verifies responses with
- * the route's trust policy. A model whose API does not match the route is a
- * programming error, so it throws — it never silently runs through another API.
+ * for `route.api`; the wrapper shapes requests through the route policy and
+ * verifies responses with the route's trust policy. A model whose API does
+ * not match the route is a programming error, so it throws — it never
+ * silently runs through another API. Deferred entry points pass through only
+ * when the injected native implementation provides them, guarded by the same
+ * API check.
  */
 export function createVerifiedStreams(
 	route: WokeyRoute,
@@ -170,5 +142,21 @@ export function createVerifiedStreams(
 			checkApi(model);
 			return native.streamSimple(model, context, buildRoutedOptions(route, config, onReport, model, options));
 		},
+		...(native.fetchDeferred
+			? {
+					fetchDeferred: (model: Model<Api>, handle: DeferredHandle, options?: DeferredFetchOptions): AssistantMessageEventStream => {
+						checkApi(model);
+						return native.fetchDeferred!(model, handle, options);
+					},
+				}
+			: {}),
+		...(native.cancelDeferred
+			? {
+					cancelDeferred: async (model: Model<Api>, handle: DeferredHandle, options?: DeferredCancelOptions): Promise<void> => {
+						checkApi(model);
+						await native.cancelDeferred!(model, handle, options);
+					},
+				}
+			: {}),
 	};
 }

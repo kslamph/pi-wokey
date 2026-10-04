@@ -8,9 +8,6 @@
  * because a failed lookup is a missing number, never a broken panel.
  */
 
-import type { WokeyConfig } from "./config.ts";
-import { getRoute } from "./routes.ts";
-
 export interface BalanceInfo {
 	/** Spendable now, in USD. */
 	availableUsd: number;
@@ -41,20 +38,29 @@ export function parseBalance(json: unknown): BalanceInfo | undefined {
 }
 
 /**
- * Best-effort balance read. Resolves to `undefined` for every failure mode —
- * no key, non-2xx, unparseable body, timeout — so callers can render without
- * a branch on the error.
+ * Stable Wokey API root. The dashboard hangs off this root directly — never
+ * derive it from a model's baseUrl, which is per-route and may point at a
+ * different relay host.
  */
-export async function fetchBalance(config: WokeyConfig, key: string | undefined): Promise<BalanceInfo | undefined> {
+export const WOKEY_API_ROOT = "https://api.wokey.ai/v1";
+
+/**
+ * Best-effort balance read against the stable relay root. Resolves to
+ * `undefined` for every failure mode — no key, non-2xx, unparseable body,
+ * timeout, abort — so callers can render without a branch on the error. The
+ * optional caller signal is honored alongside the built-in timeout, so a
+ * stalled relay neither hangs the panel nor outlives its caller.
+ */
+export async function fetchBalance(
+	rootUrl: string,
+	key: string | undefined,
+	signal?: AbortSignal,
+): Promise<BalanceInfo | undefined> {
 	if (!key) return undefined;
-	// Task 1 shim: the dashboard hangs off the GPT route's relay base. Task 5
-	// points this at the stable Wokey API root instead.
-	void config;
-	const baseUrl = getRoute("openai-codex").baseUrl;
 	try {
-		const res = await fetch(`${baseUrl}/dashboard/balance`, {
+		const res = await fetch(`${rootUrl}/dashboard/balance`, {
 			headers: { authorization: `Bearer ${key}` },
-			signal: AbortSignal.timeout(BALANCE_TIMEOUT_MS),
+			signal: signal ? AbortSignal.any([AbortSignal.timeout(BALANCE_TIMEOUT_MS), signal]) : AbortSignal.timeout(BALANCE_TIMEOUT_MS),
 		});
 		if (!res.ok) return undefined;
 		return parseBalance(await res.json());
