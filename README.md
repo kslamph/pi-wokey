@@ -109,8 +109,9 @@ Every exchange gets exactly one of four labels.
 | ⚠️ `unproven` | No proof record was present, so there was nothing to verify. |
 
 `/wokey` shows the running counters, your remaining balance, and the full check list for
-the last exchange. Anything that is not `verified` is also mirrored to stderr, so you see it
-even in a headless run:
+the last exchange. In the TUI, anything that is not `verified` is raised as a styled session
+warning (yellow, above the editor); in a headless run — `pi -p`, `--json`, RPC — it is written
+to stderr instead, so you see it even with no UI to draw in:
 
 ```
 [wokey] ❌ wokey verification failed — Response signature: received bytes do not match the signed hash — response was modified
@@ -235,7 +236,7 @@ Everything else is optional. Add keys to `~/.pi/agent/wokey.json` (defaults show
 |---|---|---|
 | `expectedPcr0` | shipped constant | Your own pinned enclave measurement (96 hex digits). |
 | `verify` | `true` | Turn proof probing off entirely. |
-| `notifyOnFailure` | `true` | Surface failed and unproven verdicts. |
+| `notifyOnFailure` | `true` | Surface failed verdicts, and the first `unproven` one per session. |
 
 There are no adapter, base-URL, or trust-anchor settings: the route, API, relay root,
 and signed upstream tuple are pinned per model in code, so a settings file cannot widen

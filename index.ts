@@ -39,10 +39,18 @@ export default function wokeyProvider(pi: ExtensionAPI, config: WokeyConfig = re
 	let balance: BalanceInfo | undefined;
 	let unprovenWarned = false;
 	let ui: { notify(message: string, level?: string): void } | undefined;
+	/** Run mode, so a verdict can be routed to the surface that can actually show it. */
+	let mode = "tui";
 
-	const notify = (message: string): void => {
+	/**
+	 * `notify` is the styled path: pi renders "warning"/"error" into the session
+	 * transcript, in theme colours, above the editor. "info" is the dim status
+	 * line, and consecutive info lines replace each other — fine for chatter,
+	 * wrong for a verdict. Default to "info" so ordinary notices stay quiet.
+	 */
+	const notify = (message: string, type: "info" | "warning" | "error" = "info"): void => {
 		try {
-			ui?.notify(message, "info");
+			ui?.notify(message, type);
 		} catch {
 			// UI may be gone during reload/shutdown; notifications are best-effort.
 		}
@@ -55,9 +63,14 @@ export default function wokeyProvider(pi: ExtensionAPI, config: WokeyConfig = re
 		// (see README) — repeating it every turn trains you to ignore warnings, so it is
 		// shown in /wokey instead. Warn only on a real problem: failed check or no proof.
 		if (config.notifyOnFailure && report.status !== "verified" && report.status !== "verified-with-gaps") {
+			// "unproven" means the relay sent no proof at all: one notice is enough to
+			// know, and a per-turn repeat is noise. Dedup before warning — checking
+			// afterwards could never suppress anything.
+			if (report.status === "unproven") {
+				if (unprovenWarned) return;
+				unprovenWarned = true;
+			}
 			warn(report);
-			if (report.status === "unproven" && unprovenWarned) return;
-			if (report.status === "unproven") unprovenWarned = true;
 		}
 	};
 
@@ -66,14 +79,18 @@ export default function wokeyProvider(pi: ExtensionAPI, config: WokeyConfig = re
 		const detail = failed.length > 0 ? failed.map((c) => `${c.name}: ${c.detail}`).join("; ") : (report.reason ?? "no detail");
 		const headline = report.status === "unproven" ? "response is not attested" : "verification failed";
 		const line = `${MARK[report.status]} wokey ${headline} — ${detail}`;
-		// ui.notify is a no-op in --print mode, so mirror to stderr: a proof verdict
-		// you cannot see is not a verdict.
-		try {
-			process.stderr.write(`[wokey] ${line}\n`);
-		} catch {
-			/* stderr closed */
+		// Outside the TUI (pi -p, --json, RPC) ui.notify is a no-op or advisory, so
+		// mirror to stderr: a proof verdict you cannot see is not a verdict. In the
+		// TUI it must NOT be written — a raw stderr write lands on the cursor pi is
+		// painting the editor with and stays there as stray unstyled text.
+		if (mode !== "tui" || !ui) {
+			try {
+				process.stderr.write(`[wokey] ${line}\n`);
+			} catch {
+				/* stderr closed */
+			}
 		}
-		notify(line);
+		notify(line, "warning");
 	}
 
 	// One native provider for both routes. Auth, model dispatch, and catalog
@@ -114,6 +131,7 @@ export default function wokeyProvider(pi: ExtensionAPI, config: WokeyConfig = re
 
 	pi.on("session_start", (_event, ctx) => {
 		ui = ctx.ui;
+		mode = (ctx.mode as string | undefined) ?? "tui";
 		notify(`wokey: ${PROVIDER_NAME} ready — ${provider.getModels().length} models, proof probing ${config.verify ? "on" : "off"} (run /wokey for status)`);
 		// Fire-and-forget through the native refresh path: a hung relay catalog
 		// call must not block session start, and a failure keeps the baked-in lineup.
@@ -132,6 +150,7 @@ export default function wokeyProvider(pi: ExtensionAPI, config: WokeyConfig = re
 
 	// Expose for tests / debugging.
 	(pi as unknown as { __wokey?: unknown }).__wokey = {
+		report: onReport,
 		stats: () => ({ ...stats }),
 		config: () => ({ ...config }),
 		last: () => last,
