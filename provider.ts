@@ -18,9 +18,12 @@ import {
 	type Provider,
 	type RefreshModelsContext,
 } from "@earendil-works/pi-ai";
-import { anthropicMessagesApi } from "@earendil-works/pi-ai/api/anthropic-messages.lazy";
-import { openAIResponsesApi } from "@earendil-works/pi-ai/api/openai-responses.lazy";
-import { openAICompletionsApi } from "@earendil-works/pi-ai/api/openai-completions.lazy";
+// NOTE: import the wire APIs from the /compat entrypoint, never from the deep
+// `/api/*.lazy` paths. Pi aliases only `@earendil-works/pi-ai`, `/compat`,
+// `/oauth` and `/providers/all` into extensions; a deep import resolves by plain
+// Node lookup, which finds nothing under a managed npm install (peers are
+// suppressed) and breaks `pi` startup with "Cannot find module" (seen in 0.6.2).
+import { anthropicMessagesApi, openAICompletionsApi, openAIResponsesApi } from "@earendil-works/pi-ai/compat";
 import { PROVIDER_ID, type WokeyConfig } from "./config.ts";
 import { activeModels, refreshFromCatalog } from "./models.ts";
 import { getRoute, type WokeyApi } from "./routes.ts";

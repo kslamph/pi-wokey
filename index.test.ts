@@ -10,7 +10,14 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 const { streamSimple } = vi.hoisted(() => ({ streamSimple: vi.fn((..._args: unknown[]) => ({}) as never) }));
-vi.mock("@earendil-works/pi-ai/compat", () => ({ getApiProvider: () => ({ streamSimple }) }));
+vi.mock("@earendil-works/pi-ai/compat", () => ({
+	getApiProvider: () => ({ streamSimple }),
+	// provider.ts builds the native provider through these factories; the tests below
+	// never stream, so sharing the hoisted streamSimple fake is enough to construct it.
+	openAIResponsesApi: () => ({ streamSimple }),
+	anthropicMessagesApi: () => ({ streamSimple }),
+	openAICompletionsApi: () => ({ streamSimple }),
+}));
 
 import wokeyProvider from "./index.ts";
 import { resolveConfig, type WokeyConfig } from "./config.ts";

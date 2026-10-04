@@ -13,9 +13,13 @@ const { openAIStreams, anthropicStreams, completionsStreams } = vi.hoisted(() =>
 	anthropicStreams: { stream: vi.fn((..._args: unknown[]) => ({}) as never), streamSimple: vi.fn((..._args: unknown[]) => ({}) as never) },
 	completionsStreams: { stream: vi.fn((..._args: unknown[]) => ({}) as never), streamSimple: vi.fn((..._args: unknown[]) => ({}) as never) },
 }));
-vi.mock("@earendil-works/pi-ai/api/openai-responses.lazy", () => ({ openAIResponsesApi: () => openAIStreams }));
-vi.mock("@earendil-works/pi-ai/api/anthropic-messages.lazy", () => ({ anthropicMessagesApi: () => anthropicStreams }));
-vi.mock("@earendil-works/pi-ai/api/openai-completions.lazy", () => ({ openAICompletionsApi: () => completionsStreams }));
+// Mock the /compat entrypoint (the only pi-ai subpath Pi aliases into extensions —
+// see the NOTE in provider.ts). One mock covers all three wire-API factories.
+vi.mock("@earendil-works/pi-ai/compat", () => ({
+	openAIResponsesApi: () => openAIStreams,
+	anthropicMessagesApi: () => anthropicStreams,
+	openAICompletionsApi: () => completionsStreams,
+}));
 
 import type { RefreshModelsContext } from "@earendil-works/pi-ai";
 import { fetchBalance, WOKEY_API_ROOT } from "./balance.ts";
