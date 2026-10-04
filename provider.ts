@@ -34,6 +34,18 @@ export interface WokeyProviderOptions {
 /** Live catalog endpoint, served by the GPT route's relay root. */
 export const WOKEY_CATALOG_URL = `${getRoute("openai-codex").baseUrl}/models`;
 
+/**
+ * Last catalog-overlay warnings, for the `/wokey status` panel. The native
+ * `fetchModels` path has no warning channel back through pi's registry, so the
+ * overlay result is kept here: a successful refresh replaces the list, while a
+ * skipped or failed refresh keeps the previous one rather than blanking it.
+ */
+let lastCatalogWarnings: string[] = [];
+
+export function getLastCatalogWarnings(): string[] {
+	return [...lastCatalogWarnings];
+}
+
 function apiKeyOf(credential: RefreshModelsContext["credential"]): string | undefined {
 	if (credential?.type === "api_key" && typeof credential.key === "string" && credential.key.trim()) {
 		return credential.key.trim();
@@ -55,7 +67,7 @@ export async function refreshWokeyModels(context: RefreshModelsContext): Promise
 				headers: { authorization: `Bearer ${key}` },
 				signal: context.signal,
 			});
-			if (res.ok) refreshFromCatalog(await res.json());
+			if (res.ok) lastCatalogWarnings = refreshFromCatalog(await res.json()).warnings;
 		} catch {
 			// Keep the last-known catalog; the overlay is best-effort.
 		}

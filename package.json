@@ -1,7 +1,7 @@
 {
 	"name": "pi-wokey",
 	"version": "0.6.1",
-	"description": "pi provider for wokey.ai's GPT models: every response verified against its TEE Proof-of-Observation attestation (OpenAI-compatible, warn-only)",
+	"description": "pi provider for wokey.ai GPT and Claude models over native OpenAI Responses and Anthropic Messages routes: every response verified against its TEE Proof-of-Observation attestation (warn-only)",
 	"keywords": [
 		"pi-package",
 		"pi",
@@ -10,9 +10,6 @@
 		"wokey",
 		"provider",
 		"openai",
-		"openai-compatible",
-		"gpt",
-		"gpt-6",
 		"llm",
 		"ai",
 		"coding-agent",
@@ -24,7 +21,11 @@
 		"nitro-enclave",
 		"proof-of-observation",
 		"verification",
-		"supply-chain"
+		"supply-chain",
+		"openai-responses",
+		"claude",
+		"anthropic",
+		"anthropic-messages"
 	],
 	"license": "Apache-2.0",
 	"type": "module",

@@ -39,6 +39,8 @@ export interface ProofVerdict {
 	checks: TeeCheck[];
 	upstreamHost?: string;
 	upstreamPath?: string;
+	/** Signed HTTP method, so the status panel can render the exact signed tuple. */
+	upstreamMethod?: string;
 	pcr0?: string;
 	/** Model string the upstream reported in its own (integrity-bound) response body. */
 	reportedModel?: string;
@@ -340,6 +342,7 @@ export function verifyExchange(input: VerifyInput, policy: VerificationPolicy): 
 
 	const gotMethod = String(proof.http_method ?? "");
 	const methodOk = gotMethod === policy.endpoint.method;
+	const upstreamMethod = gotMethod || undefined;
 	checks.push({
 		name: "Upstream method",
 		ok: methodOk,
@@ -371,6 +374,7 @@ export function verifyExchange(input: VerifyInput, policy: VerificationPolicy): 
 			checks,
 			upstreamHost: proof.upstream_host,
 			upstreamPath: path,
+			upstreamMethod,
 			pcr0: result.attestation.pcr0 ?? undefined,
 			reportedModel: input.extractServedModel(parsed.body),
 			bytes: (input.clientBytes ?? parsed.body).length,

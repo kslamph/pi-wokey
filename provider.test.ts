@@ -18,7 +18,7 @@ vi.mock("@earendil-works/pi-ai/api/anthropic-messages.lazy", () => ({ anthropicM
 import type { RefreshModelsContext } from "@earendil-works/pi-ai";
 import { fetchBalance, WOKEY_API_ROOT } from "./balance.ts";
 import { resolveConfig } from "./config.ts";
-import { createWokeyProvider } from "./provider.ts";
+import { createWokeyProvider, getLastCatalogWarnings, refreshWokeyModels } from "./provider.ts";
 
 const context = { messages: [] } as never;
 
@@ -141,6 +141,28 @@ describe("native catalog refresh", () => {
 		const p = provider();
 		await expect(p.refreshModels!(refreshContext())).resolves.toBeUndefined();
 		expect(p.getModels().map((m) => m.id)).toEqual(["gpt-6.1-sol", "gpt-6-luna", "gpt-6-astra", "claude-opus-5-5"]);
+	});
+
+	it("keeps overlay warnings for the status panel and replaces them on the next success", async () => {
+		stubFetch(() => ok({ data: [{ id: "no-such-model" }] }));
+		await refreshWokeyModels(refreshContext());
+		// The unknown id is ignored, but the missing active rows warn.
+		expect(getLastCatalogWarnings().join("\n")).toContain("gpt-6.1-sol not listed upstream");
+
+		stubFetch(() => ok({ data: [] }));
+		await refreshWokeyModels(refreshContext());
+		expect(getLastCatalogWarnings().join("\n")).toContain("gpt-6.1-sol not listed upstream");
+	});
+
+	it("leaves previous warnings in place when a refresh fails", async () => {
+		stubFetch(() => ok({ data: [] }));
+		await refreshWokeyModels(refreshContext());
+		const before = getLastCatalogWarnings();
+		expect(before.length).toBeGreaterThan(0);
+
+		stubFetch(() => Promise.reject(new Error("relay down")));
+		await refreshWokeyModels(refreshContext());
+		expect(getLastCatalogWarnings()).toEqual(before);
 	});
 
 	it("skips the network call without a credential but still returns the known models", async () => {

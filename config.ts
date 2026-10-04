@@ -1,4 +1,4 @@
-import { chmodSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 
@@ -66,8 +66,10 @@ export function settingsPath(): string {
 }
 
 export interface WokeySettings {
-	/** API key for api.wokey.ai. Optional — pi's own auth.json entry for `wokey` also works. */
-	apiKey?: string;
+	/**
+	 * Local verification preferences only. Credentials are pi-managed
+	 * (`/login wokey`, `WOKEY_API_KEY`) and never live here.
+	 */
 	expectedPcr0?: string;
 	verify?: boolean;
 	notifyOnFailure?: boolean;
@@ -77,13 +79,13 @@ export function loadSettings(): WokeySettings {
 	try {
 		const parsed = JSON.parse(readFileSync(settingsPath(), "utf8")) as unknown;
 		if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
-		// Pick only the current schema: keys from the old route/trust overrides
-		// (baseUrl, api, expectedHost(s), expectedPaths, codexEnvelope) are ignored,
-		// never migrated. An old settings file keeps working for preferences; the
-		// key is re-entered through pi auth (Task 6 removes the duplicate store).
+		// Pick only the current schema: a leftover `apiKey` and the old
+		// route/trust overrides (baseUrl, api, expectedHost(s), expectedPaths,
+		// codexEnvelope) are ignored, never migrated and never used as a
+		// credential. An old settings file keeps working for preferences; the
+		// key is re-entered through pi auth (`/login wokey`).
 		const raw = parsed as Record<string, unknown>;
 		const out: WokeySettings = {};
-		if (typeof raw.apiKey === "string") out.apiKey = raw.apiKey;
 		if (typeof raw.expectedPcr0 === "string") out.expectedPcr0 = raw.expectedPcr0;
 		if (typeof raw.verify === "boolean") out.verify = raw.verify;
 		if (typeof raw.notifyOnFailure === "boolean") out.notifyOnFailure = raw.notifyOnFailure;
@@ -97,90 +99,23 @@ export function saveSettings(settings: WokeySettings): void {
 	const path = settingsPath();
 	mkdirSync(dirname(path), { recursive: true });
 	writeFileSync(path, `${JSON.stringify(settings, null, 2)}\n`, { mode: 0o600 });
-	chmodSync(path, 0o600); // the file may hold an API key
-}
-
-/** Never print a whole key. */
-export function maskKey(key: string | undefined): string {
-	if (!key) return "(unset)";
-	if (key.length <= 10) return `${key.slice(0, 2)}…(${key.length})`;
-	return `${key.slice(0, 4)}…${key.slice(-4)} (${key.length} chars)`;
+	chmodSync(path, 0o600); // a legacy file may still hold an API key until it is removed
 }
 
 /**
- * Resolution order: this extension's settings, then pi's credential store (which is
- * what actually authenticates requests), then the environment.
- *
- * This sits on the per-request path (`stream.ts` falls back to it), so the two
- * credential files are re-read only when their metadata (or the env fallback)
- * changes. `/wokey key` rewrites the settings file, bumping its mtime and
- * invalidating the cache naturally.
+ * Detect a leftover `apiKey` in an old settings file. The value is never read
+ * as a credential — credentials come only from pi's registry (`/login wokey`,
+ * `WOKEY_API_KEY`). This exists purely so the status panel can tell the user
+ * to re-enter the key through pi auth and drop the stale entry.
  */
-let apiKeyCache: { key: string | undefined; stamp: string } | undefined;
-
-function mtimeMs(path: string): number {
+export function hasLegacyApiKey(): boolean {
 	try {
-		return statSync(path).mtimeMs;
+		const parsed = JSON.parse(readFileSync(settingsPath(), "utf8")) as unknown;
+		if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return false;
+		const key = (parsed as Record<string, unknown>).apiKey;
+		return typeof key === "string" && key.trim().length > 0;
 	} catch {
-		return 0;
-	}
-}
-
-export function resolveApiKey(): string | undefined {
-	const settings = settingsPath();
-	const authPath = join(homedir(), ".pi", "agent", "auth.json");
-	const stamp = `${mtimeMs(settings)}:${mtimeMs(authPath)}:${process.env.WOKEY_API_KEY ?? ""}`;
-	if (apiKeyCache?.stamp === stamp) return apiKeyCache.key;
-
-	let key = loadSettings().apiKey?.trim() || undefined;
-	if (!key) {
-		try {
-			const auth = JSON.parse(readFileSync(authPath, "utf8")) as Record<string, { type?: string; key?: string }>;
-			const entry = auth?.wokey;
-			if (entry?.type === "api_key" && typeof entry.key === "string" && entry.key.trim()) key = entry.key.trim();
-		} catch {
-			/* fall through to env */
-		}
-	}
-	if (!key) key = process.env.WOKEY_API_KEY?.trim() || undefined;
-
-	apiKeyCache = { key, stamp };
-	return key;
-}
-
-/**
- * pi resolves credentials from its own store *before* calling a provider's
- * streamSimple (`model-registry.js:33-41`: no resolution → hard "No API key found").
- * So a key that only lives in `wokey.json` would never be used. `/wokey key` therefore
- * writes both stores; this helper keeps the two in step without clobbering other
- * providers' entries.
- */
-export function writePiCredential(key: string): void {
-	const path = join(homedir(), ".pi", "agent", "auth.json");
-	let auth: Record<string, unknown> = {};
-	try {
-		const parsed = JSON.parse(readFileSync(path, "utf8")) as unknown;
-		if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) auth = parsed as Record<string, unknown>;
-	} catch {
-		/* absent or malformed: start a fresh store rather than refusing to save */
-	}
-	auth[PROVIDER_ID] = { type: "api_key", key };
-	mkdirSync(dirname(path), { recursive: true });
-	writeFileSync(path, `${JSON.stringify(auth, null, 2)}\n`, { mode: 0o600 });
-	chmodSync(path, 0o600);
-}
-
-export function clearPiCredential(): boolean {
-	const path = join(homedir(), ".pi", "agent", "auth.json");
-	try {
-		const parsed = JSON.parse(readFileSync(path, "utf8")) as Record<string, unknown>;
-		if (!(PROVIDER_ID in parsed)) return false;
-		delete parsed[PROVIDER_ID];
-		writeFileSync(path, `${JSON.stringify(parsed, null, 2)}\n`, { mode: 0o600 });
-		chmodSync(path, 0o600);
-		return true;
-	} catch {
-		return false;
+		return false; // missing or malformed: nothing to re-enter
 	}
 }
 

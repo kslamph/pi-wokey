@@ -30,7 +30,6 @@ import {
 	type TranscriptContext,
 } from "@earendil-works/pi-ai";
 import type { WokeyConfig } from "./config.ts";
-import { resolveApiKey } from "./config.ts";
 import { type WokeyRoute } from "./routes.ts";
 /** Kept here so existing imports keep working; the implementation lives on the route. */
 export { applyCodexEnvelope } from "./routes.ts";
@@ -84,10 +83,10 @@ function buildRoutedOptions<T extends StreamOptions>(
 	// per-API extras, and the spread above carries those through untouched.
 	const routed: StreamOptions = {
 		...options,
-		// pi supplies a key from its own credential store when it has one; otherwise
-		// fall back to this extension's settings so `/wokey key <value>` is actually
-		// sufficient on its own and does not require a second copy in auth.json.
-		apiKey: options?.apiKey ?? resolveApiKey(),
+		// Credentials are pi-managed: pi resolves the key from its own store
+		// (auth.json via `/login wokey`, or `WOKEY_API_KEY`) before calling the
+		// provider, so whatever it supplies passes through untouched and this
+		// extension never reads a second key store.
 		headers: routedHeaders,
 		// The probe verifies against this route's policy. When verification is off
 		// there is nothing to wrap, so pi (or the caller) supplies the transport.

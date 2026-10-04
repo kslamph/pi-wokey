@@ -17,9 +17,9 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { PROVIDER_ID, resolveConfig, type WokeyConfig } from "./config.ts";
 import { fetchBalance, WOKEY_API_ROOT, type BalanceInfo } from "./balance.ts";
-import { createWokeyProvider, PROVIDER_NAME } from "./provider.ts";
+import { createWokeyProvider, getLastCatalogWarnings, PROVIDER_NAME } from "./provider.ts";
 import type { ProofReport } from "./verify/probe.ts";
-import { MARK, runMenu, type CommandContext } from "./tui.ts";
+import { MARK, runMenu } from "./tui.ts";
 
 interface Stats {
 	verified: number;
@@ -83,28 +83,32 @@ export default function wokeyProvider(pi: ExtensionAPI, config: WokeyConfig = re
 	pi.registerProvider(provider);
 
 	pi.registerCommand("wokey", {
-		description: "wokey.ai manager: status, models, set/unset key",
-		handler: (args: unknown, ctx: CommandContext) =>
+		description: "wokey.ai manager: status, models (credentials via /login wokey)",
+		handler: (args, ctx) =>
 			runMenu(
 				{
 					config: () => config,
 					stats: () => ({ ...stats }),
 					last: () => last,
+					// Last catalog-overlay warnings, kept by the provider because
+					// the native fetchModels path has no warning channel back
+					// through pi's registry.
+					warnings: () => getLastCatalogWarnings(),
 					// Native catalog refresh through pi's model registry: the
 					// provider's fetchModels overlays the validated live catalog
 					// and retains the last-known lineup on failure.
 					refresh: async () => {
-						await (ctx as CommandContext).modelRegistry.refresh({ providers: [PROVIDER_ID] });
+						await ctx.modelRegistry.refresh({ providers: [PROVIDER_ID] });
 					},
 					balance: () => balance,
 					// Credentials come from pi's registry (auth.json / env), never
 					// from a second key store kept by this extension.
 					syncBalance: async () => {
-						await syncBalance(await (ctx as CommandContext).modelRegistry.getApiKeyForProvider(PROVIDER_ID));
+						await syncBalance(await ctx.modelRegistry.getApiKeyForProvider(PROVIDER_ID));
 					},
 				},
-				(Array.isArray(args) ? args : String(args ?? "").split(/\s+/)).map(String),
-				ctx as CommandContext,
+				String(args ?? "").split(/\s+/).map(String),
+				ctx,
 			),
 	});
 

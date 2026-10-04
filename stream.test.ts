@@ -121,6 +121,12 @@ describe("createVerifiedStreams (GPT route)", () => {
 		expect(nativeOptions(native, "streamSimple").apiKey).toBe("caller-key");
 	});
 
+	it("adds no API key of its own — credentials are pi-managed", () => {
+		const native = mockNative();
+		createVerifiedStreams(getRoute("openai-codex"), resolveConfig(), () => {}, native as never).streamSimple(model, context, {});
+		expect(nativeOptions(native, "streamSimple").apiKey).toBeUndefined();
+	});
+
 	it("preserves caller onResponse, abort, timeout, and env", () => {
 		const onResponse = vi.fn();
 		const controller = new AbortController();

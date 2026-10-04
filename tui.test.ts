@@ -22,6 +22,7 @@ function deps(over: Partial<MenuDeps> = {}): MenuDeps {
 		config: () => resolveConfig(),
 		stats: () => ({ verified: 3, gapped: 1, failed: 0, unproven: 0 }),
 		last: () => undefined,
+		warnings: () => [],
 		refresh: async () => {},
 		balance: () => BALANCE,
 		syncBalance: async () => {},
@@ -157,6 +158,7 @@ describe("renderStatus", () => {
 		checks: [{ name: "Upstream host", ok: true, detail: "signed upstream = chatgpt.com" }],
 		upstreamHost: "chatgpt.com",
 		upstreamPath: "/backend-api/codex/responses",
+		upstreamMethod: "POST",
 		reportedModel: "gpt-6-luna",
 		bytes: 2048,
 		durationMs: 812,
@@ -178,10 +180,12 @@ describe("renderStatus", () => {
 		expect(text).not.toContain("settings");
 	});
 
-	it("shows the four trust rows when expanded", () => {
+	it("shows the trust rows for both routes when expanded", () => {
 		const text = renderStatus(config, stats, LAST, { balance: BALANCE, expanded: true });
 		expect(text).toContain("pinned");
 		expect(text).toMatch(/upstream\s+chatgpt\.com/);
+		expect(text).toMatch(/upstream\s+api\.anthropic\.com/);
+		expect(text).toContain("/v1/messages");
 		expect(text).toContain("probing");
 		expect(text).toContain("settings");
 	});
@@ -192,11 +196,37 @@ describe("renderStatus", () => {
 		expect(text).toContain("balance");
 	});
 
+	it("shows the last signed endpoint tuple with its method", () => {
+		const text = renderStatus(config, stats, LAST, { balance: BALANCE });
+		expect(text).toMatch(/chatgpt\.com.*\/backend-api\/codex\/responses.*POST/);
+	});
+
+	it("points at pi-managed auth instead of a duplicate key store", () => {
+		const text = renderStatus(config, stats, LAST, { balance: BALANCE });
+		expect(text).toContain("/login wokey");
+		expect(text).not.toMatch(/wokey\.json.*(saved|mirrored|write)/i);
+	});
+
+	it("warns when a legacy wokey.json key must be re-entered", () => {
+		const text = renderStatus(config, stats, LAST, { balance: BALANCE, legacyKey: true });
+		expect(text).toContain("/login wokey");
+		expect(text).toMatch(/re-?enter/i);
+		expect(renderStatus(config, stats, LAST, { balance: BALANCE, legacyKey: false })).not.toMatch(/re-?enter/i);
+	});
+
+	it("surfaces catalog overlay warnings in the status", () => {
+		const warning = "catalog: gpt-6-luna not listed upstream — keeping baked-in values";
+		const text = renderStatus(config, stats, LAST, { balance: BALANCE, warnings: [warning] });
+		expect(text).toContain(warning);
+		expect(renderStatus(config, stats, LAST, { balance: BALANCE, warnings: [] })).not.toContain(warning);
+	});
+
 	it("is a strict superset when expanded — nothing else moves or disappears", () => {
 		const collapsed = renderStatus(config, stats, LAST, { balance: BALANCE }).split("\n");
 		const expanded = renderStatus(config, stats, LAST, { balance: BALANCE, expanded: true }).split("\n");
 		for (const line of collapsed) expect(expanded.join("\n")).toContain(line);
-		expect(expanded.length).toBe(collapsed.length + 4);
+		// pinned + two route upstreams + probing + settings
+		expect(expanded.length).toBe(collapsed.length + 5);
 	});
 
 	it("shows a dash, never a blank or NaN, when the balance is unknown", () => {
@@ -219,4 +249,49 @@ describe("renderStatus", () => {
 		expect(text).toContain("No response verified yet this session.");
 		expect(text).toMatch(/balance\s+—/);
 	});
+});
+
+describe("/wokey mixed-model lineup", () => {
+	it("renders GPT and Claude rows with route/API identity and thinking levels", async () => {
+		const text = (await renderPanel(["models"])).join("\n");
+		for (const id of ["gpt-6.1-sol", "gpt-6-luna", "gpt-6-astra", "claude-opus-5-5"]) expect(text).toContain(id);
+		// Route/API identity per family.
+		expect(text).toContain("openai-responses");
+		expect(text).toContain("anthropic-messages");
+		// Thinking levels come from the picker map, not prose.
+		expect(text).toMatch(/gpt-6-luna.*off.*low.*medium.*high.*xhigh.*max/);
+		expect(text).toMatch(/claude-opus-5-5.*low.*medium.*high.*xhigh.*max/);
+	});
+
+	it("keeps prices and context limits formatted without float dust", async () => {
+		const text = (await renderPanel(["models"])).join("\n");
+		expect(text).toMatch(/gpt-6-luna.*\$0\.09.*\$0\.45/);
+		expect(text).toMatch(/claude-opus-5-5.*\$0\.6.*\$3/);
+		expect(text).toMatch(/gpt-6-luna.*1\.05M/);
+		expect(text).toMatch(/claude-opus-5-5.*1\.00M/);
+		expect(text).not.toMatch(/0\.89999999/);
+	});
+});
+
+describe("retired duplicate key commands", () => {
+	/** Headless context capturing what `show()` notifies. */
+	function headlessCtx() {
+		const notes: string[] = [];
+		return {
+			notes,
+			ctx: { hasUI: false, ui: { notify: (text: string) => notes.push(text) } },
+		};
+	}
+
+	it.each([["key", "sk-new-key"], ["key"], ["unset"], ["clear"]])(
+		"guides /wokey %s to pi-managed auth instead of touching wokey.json",
+		async (...argv: string[]) => {
+			const { notes, ctx } = headlessCtx();
+			await runMenu(deps(), argv, ctx as never);
+			const text = notes.join("\n");
+			expect(text).toMatch(argv[0] === "key" ? /\/login wokey/ : /\/logout wokey/);
+			expect(text).not.toMatch(/saved to.*wokey\.json/i);
+			expect(text).not.toMatch(/removed from.*wokey\.json/i);
+		},
+	);
 });
