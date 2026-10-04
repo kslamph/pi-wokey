@@ -105,8 +105,9 @@ Every exchange gets exactly one of four labels.
 | ⚠️ `unproven` | No proof record was present, so there was nothing to verify. |
 
 `/wokey` shows the running counters, your remaining balance, and the full check list for
-the last exchange. Anything that is not `verified` is also mirrored to stderr, so you see it
-even in a headless run:
+the last exchange. In the TUI, anything that is not `verified` is raised as a styled session
+warning (yellow, above the editor); in a headless run — `pi -p`, `--json`, RPC — it is written
+to stderr instead, so you see it even with no UI to draw in:
 
 ```
 [wokey] ❌ wokey verification failed — Response signature: received bytes do not match the signed hash — response was modified
@@ -229,7 +230,7 @@ Keys are looked up in this order: `~/.pi/agent/wokey.json` → pi's credential s
 | `expectedPaths` | `/backend-api/codex/responses` | Accepted signed upstream path(s). |
 | `codexEnvelope` | `true` | Shape requests into the Codex envelope the upstream expects. |
 | `verify` | `true` | Turn proof probing off entirely. |
-| `notifyOnFailure` | `true` | Surface failed and unproven verdicts. |
+| `notifyOnFailure` | `true` | Surface failed verdicts, and the first `unproven` one per session. |
 
 Test-only environment overrides (unset in normal use): `WOKEY_EXPECTED_HOST`,
 `WOKEY_EXPECTED_PCR0`, `WOKEY_EXPECTED_PATH`, `WOKEY_NO_VERIFY=1`.
