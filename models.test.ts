@@ -1,12 +1,13 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { calculateCost, getSupportedThinkingLevels } from "@earendil-works/pi-ai";
-import { GPT_MODELS, COMPLETIONS_MODELS, activeModels, activeSpecs, allSpecs, enabledModelIds, refreshFromCatalog, toModel } from "./models.ts";
+import { GPT_MODELS, CLAUDE_MODELS, COMPLETIONS_MODELS, activeModels, activeSpecs, allSpecs, enabledModelIds, refreshFromCatalog, toModel } from "./models.ts";
 import { getRoute } from "./routes.ts";
 
 // refreshFromCatalog reconciles the baked-in table in place against the live
 // catalog, so restore it after every case rather than hand-restoring inline.
 const snapshot = () => ({
 	gpt: GPT_MODELS.map((m) => ({ ...m })),
+	claude: CLAUDE_MODELS.map((m) => ({ ...m })),
 	chat: COMPLETIONS_MODELS.map((m) => ({ ...m })),
 	opus: activeSpecs().find((s) => s.id === "claude-opus-5-5") ? { ...activeSpecs().find((s) => s.id === "claude-opus-5-5")! } : undefined,
 });
@@ -22,6 +23,7 @@ beforeEach(() => {
 });
 afterEach(() => {
 	before.gpt.forEach((s, i) => Object.assign(GPT_MODELS[i]!, s));
+	before.claude.forEach((s, i) => Object.assign(CLAUDE_MODELS[i]!, s));
 	before.chat.forEach((s, i) => Object.assign(COMPLETIONS_MODELS[i]!, s));
 	if (before.opus) {
 		const live = activeSpecs().find((s) => s.id === "claude-opus-5-5");
@@ -327,10 +329,57 @@ describe("active lineup", () => {
 	});
 });
 
-describe("chat-completions vendors", () => {
-	it("lists Zhipu, MiniMax and DeepSeek rows for the selector, verified lineup first", () => {
+describe("full Claude lineup", () => {
+	const ids = [
+		"claude-opus-5-5", "claude-opus-5", "claude-opus-4-8", "claude-opus-4-7", "claude-opus-4-6",
+		"claude-sonnet-5-5", "claude-sonnet-5", "claude-sonnet-4-6", "claude-sonnet-4-5",
+		"claude-haiku-4-5", "claude-fable-5-1", "claude-fable-5",
+	];
+
+	it("lists all twelve Claude rows for the selector on the verified Messages route", () => {
+		const specs = allSpecs().filter((s) => s.vendor === "Anthropic");
+		expect(specs.map((s) => s.id)).toEqual(ids);
+		for (const s of specs) expect(s.route).toBe("anthropic-direct");
+	});
+
+	it("borrows pi-native thinking maps and compat per row", () => {
+		const byId = Object.fromEntries(allSpecs().map((s) => [s.id, s]));
+		// Spot-check the distinctive maps: opus-4-6 is max-only, sonnet-5-5
+		// mirrors sonnet-5 (no pi entry exists — see the spec comment).
+		expect(toModel(byId["claude-opus-4-6"]!).thinkingLevelMap).toEqual({
+			off: null, minimal: null, low: null, medium: null, high: null, xhigh: null, max: "max",
+		});
+		expect(toModel(byId["claude-sonnet-5-5"]!).thinkingLevelMap).toEqual(
+			toModel(byId["claude-sonnet-5"]!).thinkingLevelMap,
+		);
+		expect(toModel(byId["claude-opus-5"]!).compat).toMatchObject({
+			forceAdaptiveThinking: true, supportsTemperature: false, supportsStrictTools: true,
+		});
+		// Haiku and Sonnet 4.5 carry no map in pi either — borrowed as-is.
+		expect("thinkingLevelMap" in toModel(byId["claude-haiku-4-5"]!)).toBe(false);
+		expect("thinkingLevelMap" in toModel(byId["claude-sonnet-4-5"]!)).toBe(false);
+	});
+
+	it("uses Wokey's own windows and text-vs-image per row, not pi's", () => {
+		const byId = Object.fromEntries(allSpecs().map((s) => [s.id, toModel(s)]));
+		// Wokey serves these text-only with a 200k window; pi claims 1M + image.
+		expect(byId["claude-sonnet-4-5"]!).toMatchObject({ input: ["text"], contextWindow: 200_000, maxTokens: 64_000 });
+		expect(byId["claude-haiku-4-5"]!).toMatchObject({ input: ["text"], contextWindow: 200_000, maxTokens: 64_000 });
+		// …while Opus 5 and Sonnet 5.5 keep image input on both sides.
+		expect(byId["claude-opus-5"]!.input).toEqual(["text", "image"]);
+		expect(byId["claude-sonnet-5-5"]!.input).toEqual(["text", "image"]);
+	});
+
+	it("carries Wokey's rates with the 5m cache-write convention", () => {
+		const byId = Object.fromEntries(allSpecs().map((s) => [s.id, toModel(s)]));
+		expect(byId["claude-sonnet-5"]!.cost).toMatchObject({ input: 0.3, output: 1.5, cacheRead: 0.03, cacheWrite: 0.375 });
+		expect(byId["claude-fable-5-1"]!.cost).toMatchObject({ input: 2.39, output: 11.95, cacheRead: 0.05975, cacheWrite: 2.9875 });
+	});
+});
+
+describe("chat-completions vendors", () => {	it("lists Zhipu, MiniMax and DeepSeek rows for the selector, verified lineup first", () => {
 		const ids = allSpecs().map((s) => s.id);
-		for (const id of ["glm-5.3", "glm-5.3-flash", "MiniMax-M3", "deepseek-v4-flash", "deepseek-v4-pro"]) {
+		for (const id of ["glm-5.3", "glm-5.3-flash", "MiniMax-M3", "deepseek-v4-flash", "deepseek-v4-pro", "deepseek-flash"]) {
 			expect(ids).toContain(id);
 		}
 		// Verified lineup stays ahead of the opt-in vendors.
@@ -391,6 +440,16 @@ describe("chat-completions vendors", () => {
 			else process.env.WOKEY_CONFIG = prev;
 			rmSync(dir, { recursive: true, force: true });
 		}
+	});
+
+	it("resolves the opencode-routed V4.1 Flash with pi's deepseek metadata", () => {
+		const model = toModel(allSpecs().find((s) => s.id === "deepseek-flash")!);
+		expect(model.api).toBe("openai-completions");
+		expect(model.baseUrl).toBe("https://api.wokey.ai/v1");
+		expect(model.thinkingLevelMap).toEqual({ off: null, minimal: null, low: "low", medium: null, high: "high", xhigh: null, max: "max" });
+		expect(model.compat).toMatchObject({ thinkingFormat: "deepseek", requiresReasoningContentOnAssistantMessages: true });
+		expect(model.cost).toMatchObject({ input: 0.112, output: 0.448 });
+		expect(model.maxTokens).toBe(393_216);
 	});
 });
 

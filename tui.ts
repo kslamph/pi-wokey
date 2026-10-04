@@ -216,22 +216,22 @@ function selectOne(ctx: CommandContext, title: string, items: { value: string; l
  * Read-only info panel. `getBody` is re-evaluated on every render, so the panel
  * shows fresh state once an action has run.
  *
- * `onRefresh` and `onMore` are independent: one toggles a fold inside the body,
- * the other reloads state from the relay. Either may be omitted, and the footer
- * only advertises the keys that exist.
+ * `onMount` runs once when the panel opens (for a fire-and-forget refresh that
+ * repaints on arrival); `onMore` toggles a fold inside the body. The footer
+ * only advertises the keys that exist. There is deliberately no manual
+ * refresh key: entering the panel already re-reads what it shows.
  */
 function infoPanel(
 	ctx: CommandContext,
 	title: string,
 	getBody: (expanded: boolean) => string,
-	actions?: { onRefresh?: () => Promise<void>; onMore?: () => void },
+	actions?: { onMount?: (tui: { requestRender(): void }) => void; onMore?: () => void },
 ): Promise<void> {
 	return ctx.ui.custom<void>((tui, theme, _kb, done) => {
-		let refreshing = false;
 		let expanded = false;
+		actions?.onMount?.(tui);
 		const footer = (): string => {
 			const keys = ["enter/esc close"];
-			if (actions?.onRefresh) keys.push("r refresh");
 			if (actions?.onMore) keys.push(expanded ? "m less" : "m more");
 			return keys.join(" · ");
 		};
@@ -245,8 +245,7 @@ function infoPanel(
 				add();
 				for (const line of getBody(expanded).split("\n")) add(` ${line}`);
 				add();
-				if (refreshing) add(` ${theme.fg("text", "refreshing…")}`);
-				else add(` ${theme.fg("text", footer())}`);
+				add(` ${theme.fg("text", footer())}`);
 				return lines;
 			},
 			invalidate() {},
@@ -260,21 +259,6 @@ function infoPanel(
 					tui.requestRender();
 					return;
 				}
-				if (actions?.onRefresh && (data === "r" || data === "R") && !refreshing) {
-					refreshing = true;
-					tui.requestRender();
-					// Whatever `onRefresh` covers (catalog, balance, both) reloads
-					// under one "refreshing…" state, so `r` never leaves a
-					// half-stale view behind.
-					void actions
-						.onRefresh()
-						.catch(() => undefined)
-						.finally(() => {
-							refreshing = false;
-							tui.requestRender();
-						});
-					return;
-				}
 				tui.requestRender();
 			},
 		};
@@ -283,12 +267,11 @@ function infoPanel(
 
 /**
  * The status panel folds its trust anchors behind `m`, so the body is a thunk
- * over the fold state rather than pre-rendered text. Opening the panel kicks off
- * a balance read: the number lands on the next render, and a slow relay costs a
- * moment rather than a blank panel.
+ * over the fold state rather than pre-rendered text. Opening the panel always
+ * re-reads the balance and repaints on arrival, so the number is never older
+ * than the visit — there is no manual refresh key to remember.
  */
 function openStatus(ctx: CommandContext, deps: MenuDeps): Promise<void> {
-	void deps.syncBalance();
 	// One disk read per panel open, not per render: renderStatus is pure and
 	// the fold toggle re-renders without touching disk.
 	const legacyKey = hasLegacyApiKey();
@@ -303,10 +286,8 @@ function openStatus(ctx: CommandContext, deps: MenuDeps): Promise<void> {
 				legacyKey,
 			}),
 		{
-			// Catalog and balance reload together, so `r` cannot leave the price
-			// list fresh next to a stale balance.
-			onRefresh: async () => {
-				await Promise.all([deps.refresh(), deps.syncBalance()]);
+			onMount: (t) => {
+				void deps.syncBalance().finally(() => t.requestRender());
 			},
 			onMore: () => undefined, // presence is what binds `m`; state lives above
 		},

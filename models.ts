@@ -71,12 +71,14 @@ export interface WokeyGptSpec extends WokeyModelBase {
 
 export interface WokeyAnthropicSpec extends WokeyModelBase {
 	route: "anthropic-direct";
+	/** Input modalities callable through Wokey (the catalog is authoritative here). */
+	inputModalities?: ("text" | "image")[];
 	/**
-	 * Exact pi thinking-level map, pinned per the design spec. `off`/`minimal`
-	 * are null (Opus 5.5 has no effort-off mode), so the picker offers exactly
-	 * low/medium/high/xhigh/max.
+	 * pi thinking-level map, borrowed from pi's own native-anthropic metadata
+	 * for the same id. Absent means pi's default (all levels) — that is what
+	 * pi's own entry carries for Haiku 4.5 and Sonnet 4.5, so borrowed as-is.
 	 */
-	thinkingLevelMap: ThinkingLevelMap;
+	thinkingLevelMap?: ThinkingLevelMap;
 	/**
 	 * Adaptive-thinking model on the Messages API: forced adaptive thinking,
 	 * mid-conversation effort/system/tool changes, strict tools, no temperature.
@@ -225,10 +227,113 @@ export const COMPLETIONS_MODELS: WokeyCompletionsSpec[] = [
 		thinkingLevelMap: { off: null, minimal: null, low: null, medium: null, high: "high", xhigh: null, max: "max" },
 		compat: { supportsStore: false, supportsDeveloperRole: false, supportsStrictMode: true, maxTokensField: "max_tokens", requiresReasoningContentOnAssistantMessages: true, thinkingFormat: "deepseek" },
 	},
+	{
+		// Sourced via OpenCode Go (owned_by opencode), not the volcengine-direct
+		// rows above — same family metadata from pi's deepseek entry. Baked rate
+		// is the current off-peak readout; the live catalog overlay moves it.
+		id: "deepseek-flash", name: "DeepSeek V4.1 Flash", route: "openai-chat", vendor: "DeepSeek",
+		input: 0.112, output: 0.448, cacheRead: 0.00224, cacheWrite: 0, contextWindow: 1_000_000, maxTokens: 393_216,
+		inputModalities: ["text", "image"],
+		thinkingLevelMap: { off: null, minimal: null, low: "low", medium: null, high: "high", xhigh: null, max: "max" },
+		compat: { supportsStore: false, supportsDeveloperRole: false, supportsStrictMode: true, maxTokensField: "max_tokens", requiresReasoningContentOnAssistantMessages: true, thinkingFormat: "deepseek" },
+	},
+];
+
+/**
+ * The full Claude lineup on the verified Messages route.
+ *
+ * Thinking maps and compat are borrowed from pi's own native-anthropic
+ * metadata for the same ids and assumed correct unless live use proves
+ * otherwise — except `claude-sonnet-5-5`, which pi ships nowhere: it mirrors
+ * its sibling Sonnet 5 (flagged here so a wrong guess is easy to find).
+ * Rates, context, max output and text-vs-image come from Wokey's own catalog
+ * (several rows are text-only there despite pi's image-capable entries, and
+ * Sonnet 4.5/Haiku carry a 200k window, not pi's 1M). `cacheWrite` is the 5m
+ * rate, matching the Opus 5.5 convention. Opus 5.5 stays first: it is the
+ * measured, live-verified reference row.
+ */
+export const CLAUDE_MODELS: WokeyAnthropicSpec[] = [
+	CLAUDE_OPUS_5_5,
+	{
+		id: "claude-opus-5", name: "Claude Opus 5", route: "anthropic-direct", vendor: "Anthropic",
+		input: 0.75, output: 3.75, cacheRead: 0.075, cacheWrite: 0.9375, contextWindow: 1_000_000, maxTokens: 128_000,
+		inputModalities: ["text", "image"],
+		thinkingLevelMap: { off: null, minimal: null, low: null, medium: null, high: null, xhigh: "xhigh", max: "max" },
+		compat: { supportsMidConvoEffort: true, supportsMidConvoSystemMessages: true, supportsMidConvoToolChanges: true, forceAdaptiveThinking: true, supportsTemperature: false, supportsStrictTools: true },
+	},
+	{
+		id: "claude-opus-4-8", name: "Claude Opus 4.8", route: "anthropic-direct", vendor: "Anthropic",
+		input: 0.75, output: 3.75, cacheRead: 0.075, cacheWrite: 0.9375, contextWindow: 1_000_000, maxTokens: 128_000,
+		inputModalities: ["text"],
+		thinkingLevelMap: { off: null, minimal: null, low: null, medium: null, high: null, xhigh: "xhigh", max: "max" },
+		compat: { supportsMidConvoSystemMessages: true, supportsMidConvoToolChanges: true, forceAdaptiveThinking: true, supportsTemperature: false, supportsStrictTools: true },
+	},
+	{
+		id: "claude-opus-4-7", name: "Claude Opus 4.7", route: "anthropic-direct", vendor: "Anthropic",
+		input: 0.75, output: 3.75, cacheRead: 0.075, cacheWrite: 0.9375, contextWindow: 1_000_000, maxTokens: 128_000,
+		inputModalities: ["text"],
+		thinkingLevelMap: { off: null, minimal: null, low: null, medium: null, high: null, xhigh: "xhigh", max: "max" },
+		compat: { forceAdaptiveThinking: true, supportsTemperature: false, supportsStrictTools: true },
+	},
+	{
+		id: "claude-opus-4-6", name: "Claude Opus 4.6", route: "anthropic-direct", vendor: "Anthropic",
+		input: 0.75, output: 3.75, cacheRead: 0.075, cacheWrite: 0.9375, contextWindow: 1_000_000, maxTokens: 128_000,
+		inputModalities: ["text"],
+		thinkingLevelMap: { off: null, minimal: null, low: null, medium: null, high: null, xhigh: null, max: "max" },
+		compat: { forceAdaptiveThinking: true, supportsStrictTools: true },
+	},
+	{
+		// No pi entry anywhere for this id: mirrors Sonnet 5 until proven otherwise.
+		id: "claude-sonnet-5-5", name: "Claude Sonnet 5.5", route: "anthropic-direct", vendor: "Anthropic",
+		input: 0.3, output: 1.5, cacheRead: 0.03, cacheWrite: 0.375, contextWindow: 1_000_000, maxTokens: 128_000,
+		inputModalities: ["text", "image"],
+		thinkingLevelMap: { off: null, minimal: null, low: null, medium: null, high: null, xhigh: "xhigh", max: "max" },
+		compat: { forceAdaptiveThinking: true, supportsStrictTools: true },
+	},
+	{
+		id: "claude-sonnet-5", name: "Claude Sonnet 5", route: "anthropic-direct", vendor: "Anthropic",
+		input: 0.3, output: 1.5, cacheRead: 0.03, cacheWrite: 0.375, contextWindow: 1_000_000, maxTokens: 128_000,
+		inputModalities: ["text"],
+		thinkingLevelMap: { off: null, minimal: null, low: null, medium: null, high: null, xhigh: "xhigh", max: "max" },
+		compat: { forceAdaptiveThinking: true, supportsStrictTools: true },
+	},
+	{
+		id: "claude-sonnet-4-6", name: "Claude Sonnet 4.6", route: "anthropic-direct", vendor: "Anthropic",
+		input: 0.45, output: 2.25, cacheRead: 0.045, cacheWrite: 0.5625, contextWindow: 1_000_000, maxTokens: 128_000,
+		inputModalities: ["text"],
+		thinkingLevelMap: { off: null, minimal: null, low: null, medium: null, high: null, xhigh: null, max: "max" },
+		compat: { forceAdaptiveThinking: true, supportsStrictTools: true },
+	},
+	{
+		id: "claude-sonnet-4-5", name: "Claude Sonnet 4.5", route: "anthropic-direct", vendor: "Anthropic",
+		input: 0.45, output: 2.25, cacheRead: 0.045, cacheWrite: 0.5625, contextWindow: 200_000, maxTokens: 64_000,
+		inputModalities: ["text"],
+		compat: { supportsStrictTools: true },
+	},
+	{
+		id: "claude-haiku-4-5", name: "Claude Haiku 4.5", route: "anthropic-direct", vendor: "Anthropic",
+		input: 0.2, output: 1.0, cacheRead: 0.02, cacheWrite: 0.25, contextWindow: 200_000, maxTokens: 64_000,
+		inputModalities: ["text"],
+		compat: { supportsStrictTools: true },
+	},
+	{
+		id: "claude-fable-5-1", name: "Claude Fable 5.1", route: "anthropic-direct", vendor: "Anthropic",
+		input: 2.39, output: 11.95, cacheRead: 0.05975, cacheWrite: 2.9875, contextWindow: 1_000_000, maxTokens: 128_000,
+		inputModalities: ["text", "image"],
+		thinkingLevelMap: { off: null, minimal: null, low: null, medium: null, high: null, xhigh: "xhigh", max: "max" },
+		compat: { supportsMidConvoEffort: true, supportsMidConvoSystemMessages: true, supportsMidConvoToolChanges: true, forceAdaptiveThinking: true, supportsStrictTools: true },
+	},
+	{
+		id: "claude-fable-5", name: "Claude Fable 5", route: "anthropic-direct", vendor: "Anthropic",
+		input: 2.39, output: 11.95, cacheRead: 0.239, cacheWrite: 2.9875, contextWindow: 1_000_000, maxTokens: 128_000,
+		inputModalities: ["text"],
+		thinkingLevelMap: { off: null, minimal: null, low: null, medium: null, high: null, xhigh: "xhigh", max: "max" },
+		compat: { supportsMidConvoSystemMessages: true, supportsMidConvoToolChanges: true, forceAdaptiveThinking: true, supportsStrictTools: true },
+	},
 ];
 
 /** The provider-wide catalog: every known row, regardless of route. */
-export const WOKEY_MODELS: WokeyModelSpec[] = [...GPT_MODELS, CLAUDE_OPUS_5_5, ...COMPLETIONS_MODELS];
+export const WOKEY_MODELS: WokeyModelSpec[] = [...GPT_MODELS, ...CLAUDE_MODELS, ...COMPLETIONS_MODELS];
 
 const PER_MILLION = 1_000_000;
 
@@ -307,7 +412,10 @@ export function toModel(spec: WokeyModelSpec): Model<WokeyApi> {
 		return {
 			...shared,
 			api: route.api,
-			thinkingLevelMap: { ...spec.thinkingLevelMap },
+			input: spec.inputModalities ?? ["text", "image"],
+			// Absent map means pi's default (all levels) — that is what pi's own
+			// entry for this family carries, so it is borrowed as-is.
+			...(spec.thinkingLevelMap ? { thinkingLevelMap: { ...spec.thinkingLevelMap } } : {}),
 			compat: { ...spec.compat },
 			...(spec.promptCache ? { promptCache: { ...spec.promptCache } } : {}),
 			...(spec.inputLimits ? { inputLimits: { ...spec.inputLimits, images: spec.inputLimits.images ? { ...spec.inputLimits.images } : undefined } } : {}),

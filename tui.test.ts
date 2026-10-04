@@ -85,7 +85,8 @@ describe("/wokey in-TUI panels", () => {
 		expect(text).toContain("balance");
 		expect(text).toContain("$10.79");
 		expect(text).toContain("key");
-		expect(text).toContain("enter/esc close · r refresh · m more");
+		expect(text).toContain("enter/esc close · m more");
+		expect(text).not.toContain("refresh"); // no manual key: open auto-refreshes
 	});
 
 	it("folds the trust anchors away until 'm' is pressed", async () => {
@@ -127,14 +128,18 @@ describe("/wokey in-TUI panels", () => {
 		expect(syncBalance).toHaveBeenCalledOnce();
 	});
 
-	it("refreshes catalog and balance together on 'r'", async () => {
+	it("auto-refreshes the balance on open and offers no manual refresh key", async () => {
 		const refresh = vi.fn(async () => {});
 		const syncBalance = vi.fn(async () => {});
 		const panel = await mount(["status"], deps({ refresh, syncBalance }));
-		syncBalance.mockClear();
-		panel.handleInput("r");
-		expect(refresh).toHaveBeenCalledOnce();
+		// Entering status re-reads the balance once, on mount.
 		expect(syncBalance).toHaveBeenCalledOnce();
+		// There is no `r` anymore: pressing it refreshes nothing.
+		panel.handleInput("r");
+		panel.handleInput("R");
+		expect(syncBalance).toHaveBeenCalledOnce();
+		expect(refresh).not.toHaveBeenCalled();
+		expect(panel.render(100).join("\n")).not.toContain("refresh");
 	});
 
 	it("renders Models as vendor tabs opening on the first vendor's lineup", async () => {

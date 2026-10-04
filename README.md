@@ -63,7 +63,7 @@ one (warn-only). Illustrative data.*
 
 | Menu item | What it shows you |
 |---|---|
-| **Status** | How much balance you have left, the verdict counters, the last exchange with every individual check and its signed upstream tuple, and any catalog warnings from the last refresh. Press `m` to fold out the trust details — the pinned image measurement, the expected upstream per route, and the probing and settings state. Press `r` to refresh. |
+| **Status** | How much balance you have left, the verdict counters, the last exchange with every individual check and its signed upstream tuple, and any catalog warnings from the last refresh. The balance re-reads itself every time you open the panel — there is no refresh key. Press `m` to fold out the trust details — the pinned image measurement, the expected upstream per route, and the probing and settings state. |
 | **Models** | The lineup picker: vendor tabs on top (←/→ to switch), models below (↑/↓ to move, space to check/uncheck, enter to save). Only checked models are registered with pi. Each row shows rates, context window, and the exact thinking levels pi will offer. |
 | **Credentials** | Managed by pi — `/login wokey`. This extension never reads or writes keys. |
 | **Remove credentials** | `/logout wokey`. The old `/wokey unset` command only prints this guidance. |
@@ -89,7 +89,7 @@ legacy key is still sitting in that file.
 
 | | |
 |---|---|
-| **Nine models, three native routes** | GPT + Claude on their verified routes (below), plus Zhipu, MiniMax and DeepSeek through pi's OpenAI Chat Completions adapter — opt-in via `/wokey` → **Models**, each with wokey's live context limits and pi-borrowed thinking levels. |
+| **21 models, three native routes** | GPT + Claude on their verified routes (below), plus Zhipu, MiniMax and DeepSeek through pi's OpenAI Chat Completions adapter — opt-in via `/wokey` → **Models**, each with wokey's live context limits and pi-borrowed thinking levels. |
 | **Verified every response** | Each reply carries a signed proof from the enclave that produced it. This extension checks it and labels the exchange. |
 | **Warn-only, never blocking** | A failed or missing proof is reported, but your reply is always delivered. A relay outage degrades into a notice, not a dead session. |
 | **Silent by default** | No popups, no prompts, no flags to set. `/wokey status` is there when you want the detail. |
@@ -146,11 +146,23 @@ lineup (GPT + Claude) is on by default — the other vendors are opt-in.
 | `gpt-6-luna` | OpenAI | off, low, medium, high, xhigh, max | ✅ |
 | `gpt-6-astra` | OpenAI | low, medium, high, xhigh, max | ✅ |
 | `claude-opus-5-5` | Anthropic | low, medium, high, xhigh, max | ✅ |
+| `claude-opus-5` | Anthropic | high, xhigh, max | ✅ |
+| `claude-opus-4-8` | Anthropic | high, xhigh, max | ✅ |
+| `claude-opus-4-7` | Anthropic | high, xhigh, max | ✅ |
+| `claude-opus-4-6` | Anthropic | max | ✅ |
+| `claude-sonnet-5-5` | Anthropic | high, xhigh, max | ✅ |
+| `claude-sonnet-5` | Anthropic | high, xhigh, max | ✅ |
+| `claude-sonnet-4-6` | Anthropic | max | ✅ |
+| `claude-sonnet-4-5` | Anthropic | pi default | ✅ |
+| `claude-haiku-4-5` | Anthropic | pi default | ✅ |
+| `claude-fable-5-1` | Anthropic | high, xhigh, max | ✅ |
+| `claude-fable-5` | Anthropic | high, xhigh, max | ✅ |
 | `glm-5.3` | Zhipu | low, high, max | ⚠️ unproven by design |
 | `glm-5.3-flash` | Zhipu | low, high, max | ⚠️ unproven by design |
 | `MiniMax-M3` | MiniMax | pi default | ⚠️ unproven by design |
 | `deepseek-v4-flash` | DeepSeek | low, high, max | ⚠️ unproven by design |
 | `deepseek-v4-pro` | DeepSeek | high, max | ⚠️ unproven by design |
+| `deepseek-flash` | DeepSeek | low, high, max | ⚠️ unproven by design |
 
 `gpt-6.1-sol` and `gpt-6-astra` cannot disable reasoning — asking for `off` is clamped
 up to `low`. Only `gpt-6-luna` supports turning it off. These levels come from OpenAI's
@@ -290,7 +302,7 @@ The relay bills before it generates, so no response and no proof ever exist to c
 
 **The balance line shows `—`.** The balance could not be read: no key is set, the relay
 did not answer in time, or the reply was not one. Everything else in the panel still
-works, and `r` tries again.
+works; reopening the panel tries again.
 
 **Old settings file after upgrading.** A `wokey.json` from before the native provider
 keeps working for preferences, but its `apiKey` and route/trust keys are ignored — so
