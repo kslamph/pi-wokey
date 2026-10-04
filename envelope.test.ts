@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { applyCodexEnvelope } from "./stream.ts";
 import { thinkingLevelMapFor, GPT_MODELS } from "./models.ts";
-import { DEFAULT_CONFIG, resolveConfig } from "./config.ts";
+import { resolveConfig } from "./config.ts";
+import { getRoute } from "./routes.ts";
 
 const base = { model: "gpt-6-luna", input: [{ role: "user", content: "hi" }], stream: true, store: false };
 
@@ -90,8 +91,13 @@ describe("thinking level map", () => {
 
 describe("config", () => {
 	it("uses a bearer-key adapter, not the ChatGPT-OAuth codex adapter", () => {
-		expect(DEFAULT_CONFIG.api).toBe("openai-responses");
-		expect(DEFAULT_CONFIG.codexEnvelope).toBe(true);
+		expect(getRoute("openai-codex").api).toBe("openai-responses");
+	});
+
+	it("applies the Codex envelope through the GPT route policy", () => {
+		const out = getRoute("openai-codex").transformPayload({ model: "gpt-6-luna" }, "ck");
+		expect(out.store).toBe(false);
+		expect(out.prompt_cache_key).toBe("ck");
 	});
 });
 
@@ -105,7 +111,7 @@ describe("/wokey renderer", () => {
 			{ balance: { availableUsd: 10.787384, reservedUsd: 0 }, expanded: true },
 		);
 		expect(text).toContain("wokey.ai ·");
-		expect(text).toContain("key ");
+		expect(text).toContain("auth      pi-managed — /login wokey");
 		expect(text).toContain("$10.79"); // live balance, cents always shown
 		expect(text).toContain("437cbab8c2e5dd11");
 		expect(text).toContain("chatgpt.com");

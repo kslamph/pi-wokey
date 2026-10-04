@@ -1,0 +1,45 @@
+event: message_start
+data: {"type":"message_start","message":{"id":"msg_fixture_01","type":"message","role":"assistant","model":"claude-opus-5-5","content":[],"stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":7,"cache_creation_input_tokens":2048,"cache_read_input_tokens":0,"output_tokens":3}}}
+
+event: ping
+data: {"type":"ping"}
+
+event: content_block_start
+data: {"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":"","signature":"sig_fixture_redacted_001"}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"Fixture thinking: the clock question needs the time tool."}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"signature_delta","signature":"sig_fixture_redacted_002"}}
+
+event: content_block_stop
+data: {"type":"content_block_stop","index":0}
+
+event: content_block_start
+data: {"type":"content_block_start","index":1,"content_block":{"type":"text","text":""}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"The fixture clock says noon."}}
+
+event: content_block_stop
+data: {"type":"content_block_stop","index":1}
+
+event: content_block_start
+data: {"type":"content_block_start","index":2,"content_block":{"type":"tool_use","id":"toolu_fixture_01","name":"get_time","input":{}}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":2,"delta":{"type":"input_json_delta","partial_json":"{\"timezone\": \"UTC\"}"}}
+
+event: content_block_stop
+data: {"type":"content_block_stop","index":2}
+
+event: message_delta
+data: {"type":"message_delta","delta":{"stop_reason":"tool_use","stop_sequence":null},"usage":{"output_tokens":47}}
+
+event: message_stop
+data: {"type":"message_stop"}
+
+event: tee.proof
+data: {"v":2,"alg":"ed25519","public_key":"MCowBQYDK2VwAyEAEVOywKkdc/scY4fGXEsjf5uS9TGNR76waqWpG2eI2zo=","nonce":"YW50aHJvcGljLWZpeHR1cmUtMDE=","upstream_host":"api.anthropic.com","upstream_path":"/v1/messages","http_method":"POST","http_status":200,"resp_content_type":"text/event-stream","request_body_sha256":"8f819c44cf1a11932949b723b39f927aca4f413f5fe908c4ecf9c9be800e3260","response_body_sha256":"d9c8680b10e4d445bf3106cf64cd4d90456d97ca7d76bb4421ca64e3ffef736c","signature":"Jhr7/1kOvfPZwKRM6Ol/WIzikdEQQLqBOH57/DLajSBQaWBamCfmjR+PHEBRERmHsdYWUdNWRXPA29qtO3MLAA==","attestation":"fixture-test-only","pcr0":"437cbab8c2e5dd11a35ae5b062fe115623a013910b7c26b333e2b3af477944d630fb1dcd76fa9a9b1eefdf1d1021dec2"}
+

@@ -1,0 +1,20 @@
+{
+  "_comment": "Live-shaped Anthropic fixture for claude-opus-5-5. Synthetic body, sanitized prompt placeholder, TEST-ONLY signature (see scripts/gen-anthropic-fixtures.mjs). response_body_sha256 matches the .sse body bytes exactly.",
+  "proof": {
+    "v": 2,
+    "alg": "ed25519",
+    "public_key": "MCowBQYDK2VwAyEAEVOywKkdc/scY4fGXEsjf5uS9TGNR76waqWpG2eI2zo=",
+    "nonce": "YW50aHJvcGljLWZpeHR1cmUtMDI=",
+    "upstream_host": "api.anthropic.com",
+    "upstream_path": "/v1/messages",
+    "http_method": "POST",
+    "http_status": 200,
+    "resp_content_type": "text/event-stream",
+    "request_body_sha256": "28dae45cfb94b82cb8854f182d7c35aec85341f8558196c0cfb4bebf9012b64c",
+    "response_body_sha256": "fe418d066d316ae7464476af8975daea53246f5f2205b6b5ef1f02ff9b4e7e6c",
+    "signature": "Aj1X1DtQ6+OpjXjkVX6OhLeqgr+9H1MlY7bjuDVrBXM+eU8KOubbWTMAl/5dJayVivwxCjVJAENPX7gzsE35Aw==",
+    "attestation": "fixture-test-only",
+    "pcr0": "437cbab8c2e5dd11a35ae5b062fe115623a013910b7c26b333e2b3af477944d630fb1dcd76fa9a9b1eefdf1d1021dec2"
+  },
+  "sanitized_request_body": "{\"model\":\"claude-opus-5-5\",\"max_tokens\":1024,\"messages\":\"[fixture prompt redacted — identical repeat for cache read]\",\"stream\":true}"
+}

@@ -1,6 +1,6 @@
 # pi-wokey
 
-**Use [wokey.ai](https://wokey.ai)'s GPT models without having to take them on faith.**
+**Use [wokey.ai](https://wokey.ai)'s GPT and Claude models without having to take them on faith.**
 
 Every relay that sits between you and a model is a middleman. This extension is a 
 [pi](https://pi.dev) provider that cryptographically checks every single response
@@ -63,29 +63,33 @@ one (warn-only). Illustrative data.*
 
 | Menu item | What it shows you |
 |---|---|
-| **Status** | How much balance you have left, the verdict counters, your masked key and which store it came from, and the last exchange with every individual check. Press `m` to fold out the trust details — the pinned image measurement, the expected upstream, and the probing and settings state. Press `r` to refresh. |
-| **Models** | The lineup with current rates, context window, and the exact thinking levels each model supports. |
-| **Set API key** | Prompts for a key and writes both stores. |
-| **Unset API key** | Confirms, then removes the key from both stores. |
+| **Status** | How much balance you have left, the verdict counters, the last exchange with every individual check and its signed upstream tuple, and any catalog warnings from the last refresh. Press `m` to fold out the trust details — the pinned image measurement, the expected upstream per route, and the probing and settings state. Press `r` to refresh. |
+| **Models** | The lineup with model family, API route, current rates, context window, and the exact thinking levels each model supports. |
+| **Credentials** | Managed by pi — `/login wokey`. This extension never reads or writes keys. |
+| **Remove credentials** | `/logout wokey`. The old `/wokey unset` command only prints this guidance. |
 
 In a headless run (`pi -p`, or no UI) the subcommands print instead of opening a panel:
 
 ```bash
 /wokey status          /wokey models
-/wokey key <value>     /wokey unset
 ```
 
-Give pi your wokey key with `/wokey key sk-your-key-here` — it writes
-`~/.pi/agent/wokey.json` (mode `600`) and mirrors it into pi's own credential store.
-Prefer not to paste a key into a chat? Write that file yourself, or export
-`WOKEY_API_KEY`; both are picked up automatically. See [Configuration](#configuration)
-for where keys are looked up and what else you can change.
+Give pi your wokey key with `/login wokey` — that is the only credential
+configuration this extension uses. See [Configuration](#configuration)
+for what else you can change.
+
+Upgrading from an older version? If your `~/.pi/agent/wokey.json` still holds an `apiKey`
+or old route/trust keys (`baseUrl`, `api`, `expectedHost(s)`, `expectedPaths`,
+`codexEnvelope`), delete the file (or at least those entries) and re-enter the key with
+`/login wokey`. The old `/wokey key` and `/wokey unset` commands now only print this
+guidance — they never read or write credentials. `/wokey status` warns you while a
+legacy key is still sitting in that file.
 
 ## What you get
 
 | | |
 |---|---|
-| **Three GPT-6 models** | `gpt-6.1-sol`, `gpt-6-luna`, `gpt-6-astra`, with wokey's live context limits and thinking levels. |
+| **Four models, two native routes** | `gpt-6.1-sol`, `gpt-6-luna`, `gpt-6-astra` through pi's OpenAI Responses adapter plus `claude-opus-5-5` through pi's native Anthropic Messages adapter, each with wokey's live context limits and thinking levels. |
 | **Verified every response** | Each reply carries a signed proof from the enclave that produced it. This extension checks it and labels the exchange. |
 | **Warn-only, never blocking** | A failed or missing proof is reported, but your reply is always delivered. A relay outage degrades into a notice, not a dead session. |
 | **Silent by default** | No popups, no prompts, no flags to set. `/wokey status` is there when you want the detail. |
@@ -116,11 +120,17 @@ to stderr instead, so you see it even with no UI to draw in:
 
 ## Models
 
-| Model | Thinking levels |
-|---|---|
-| `gpt-6.1-sol` | low, medium, high, xhigh, max |
-| `gpt-6-luna` | off, low, medium, high, xhigh, max |
-| `gpt-6-astra` | low, medium, high, xhigh, max |
+Two routes, one provider. GPT models go through pi's OpenAI Responses adapter against
+the OpenAI-compatible relay root `https://api.wokey.ai/v1`; Claude Opus 5.5 goes through
+pi's native Anthropic Messages adapter against `https://api.wokey.ai`. The route is
+pinned per model — no setting can move a model to another adapter.
+
+| Model | Family | Thinking levels |
+|---|---|---|
+| `gpt-6.1-sol` | GPT | low, medium, high, xhigh, max |
+| `gpt-6-luna` | GPT | off, low, medium, high, xhigh, max |
+| `gpt-6-astra` | GPT | low, medium, high, xhigh, max |
+| `claude-opus-5-5` | Claude | low, medium, high, xhigh, max |
 
 `gpt-6.1-sol` and `gpt-6-astra` cannot disable reasoning — asking for `off` is clamped
 up to `low`. Only `gpt-6-luna` supports turning it off. These levels come from OpenAI's
@@ -164,17 +174,18 @@ millisecond rather than a round-trip.
 ### What a green report establishes
 
 An enclave running the image whose measurement equals your pinned `PCR0` opened a real
-TLS connection to a party holding a valid certificate for `chatgpt.com`, fetched exactly
-the bytes you received, and signed that fact. Nothing in between could have altered
-them.
+TLS connection to a party holding a valid certificate for the route's signed upstream
+(`chatgpt.com` for GPT, `api.anthropic.com` for Claude), fetched exactly the bytes you
+received, and signed that fact. Nothing in between could have altered them.
 
 ### What it does not establish
 
-That OpenAI's own API served the model. The signed upstream is a `chatgpt.com` TLS
-endpoint (the signed path is `/backend-api/codex/responses`), not `api.openai.com`.
-OpenAI does not sign responses, so the strongest available claim is "a valid
-`chatgpt.com` certificate was observed". This ceiling is structural, not a gap in the
-implementation.
+That the upstream provider's own API served the model. The signed upstream is a TLS
+endpoint observed by the enclave — (`chatgpt.com`, `/backend-api/codex/responses`) for
+GPT, (`api.anthropic.com`, `/v1/messages`) for Claude — not necessarily the provider's
+canonical API host. Neither OpenAI nor Anthropic signs responses, so the strongest
+available claim is "a valid certificate for that host was observed". This ceiling is
+structural, not a gap in the implementation.
 
 ### Known gaps, deliberately not hidden
 
@@ -198,7 +209,7 @@ Verification is only as strong as the values it is pinned to. There are three:
 |---|---|---|
 | **AWS Nitro root** | The hardware root the attestation chains to, pinned by fingerprint in the verifier. | Hardware. A compelled or broken Nitro service defeats it. |
 | **Enclave image (PCR0)** | A hardcoded 96-hex-digit measurement of the audited enclave image. | **Operator-published.** Accepting the shipped value means trusting wokey's reproducible build. Replace it to remove that trust. |
-| **Upstream identity** | The accepted signed host and path (`chatgpt.com`, `/backend-api/codex/responses`). | Measured from live proofs, not assumed. Any other route fails loudly. |
+| **Upstream identity** | The accepted signed host/path/method tuples, one per route: (`chatgpt.com`, `/backend-api/codex/responses`, `POST`) and (`api.anthropic.com`, `/v1/messages`, `POST`). | Measured from live proofs, not assumed. Any other route fails loudly. |
 
 **Upgrading the PCR0 anchor.** The shipped `PUBLISHED_PCR0` comes from wokey's
 reproducible-build document. To stop trusting the operator, build the enclave yourself
@@ -215,25 +226,27 @@ live proof from the new route — never pre-approve a host from documentation al
 
 ## Configuration
 
-Everything is optional. Add keys to `~/.pi/agent/wokey.json` (defaults shown):
+Credentials first: the only credential configuration is `/login wokey` (pi's own
+credential store). `WOKEY_API_KEY` is deliberately *not* read — ambient auth proved
+unreliable for this provider. This extension keeps no key of its own.
 
-Keys are looked up in this order: `~/.pi/agent/wokey.json` → pi's credential store
-(`auth.json`, entry `wokey`) → the `WOKEY_API_KEY` environment variable.
+Everything else is optional. Add keys to `~/.pi/agent/wokey.json` (defaults shown):
 
 | Key | Default | Purpose |
 |---|---|---|
-| `apiKey` | — | Your API key. Also mirrored to pi's credential store by `/wokey key`. |
-| `baseUrl` | `https://api.wokey.ai/v1` | Relay base URL. The bare `wokey.ai` host rejects API traffic. |
-| `api` | `openai-responses` | Adapter. Use `openai-completions` if wokey only exposes `/v1/chat/completions`. |
 | `expectedPcr0` | shipped constant | Your own pinned enclave measurement (96 hex digits). |
-| `expectedHost` / `expectedHosts` | `chatgpt.com` | Accepted signed upstream host(s). Matching is exact, case-insensitive. |
-| `expectedPaths` | `/backend-api/codex/responses` | Accepted signed upstream path(s). |
-| `codexEnvelope` | `true` | Shape requests into the Codex envelope the upstream expects. |
 | `verify` | `true` | Turn proof probing off entirely. |
 | `notifyOnFailure` | `true` | Surface failed verdicts, and the first `unproven` one per session. |
 
-Test-only environment overrides (unset in normal use): `WOKEY_EXPECTED_HOST`,
-`WOKEY_EXPECTED_PCR0`, `WOKEY_EXPECTED_PATH`, `WOKEY_NO_VERIFY=1`.
+There are no adapter, base-URL, or trust-anchor settings: the route, API, relay root,
+and signed upstream tuple are pinned per model in code, so a settings file cannot widen
+what verification accepts. If your `wokey.json` still contains keys from an older
+version (`apiKey`, `baseUrl`, `api`, `expectedHost(s)`, `expectedPaths`,
+`codexEnvelope`), delete them — they are ignored, and a leftover `apiKey` is never used
+as a credential. Re-enter the key with `/login wokey`.
+
+Test-only environment overrides (unset in normal use): `WOKEY_EXPECTED_PCR0`,
+`WOKEY_NO_VERIFY=1`.
 
 ## Troubleshooting
 
@@ -241,8 +254,10 @@ Test-only environment overrides (unset in normal use): `WOKEY_EXPECTED_HOST`,
 relay is actually sending:
 
 ```bash
+# The shell var below is only for poking the relay by hand; pi's own auth is unaffected.
+export WOKEY_KEY=<your wokey key>
 curl -sN https://api.wokey.ai/v1/responses \
-  -H "authorization: Bearer $WOKEY_API_KEY" -H 'content-type: application/json' \
+  -H "authorization: Bearer $WOKEY_KEY" -H 'content-type: application/json' \
   -d '{"model":"gpt-6.1-sol","input":"hi","stream":true}' | tail -5
 ```
 
@@ -256,13 +271,18 @@ The relay bills before it generates, so no response and no proof ever exist to c
 did not answer in time, or the reply was not one. Everything else in the panel still
 works, and `r` tries again.
 
-**`wrong_gateway_host`.** `baseUrl` is set to `wokey.ai` instead of `api.wokey.ai`.
+**Old settings file after upgrading.** A `wokey.json` from before the native provider
+keeps working for preferences, but its `apiKey` and route/trust keys are ignored — so
+requests fail with "No API key found" even though the file holds a key. Delete the stale
+entries (or the whole file) and re-enter the key with `/login wokey`. `/wokey status`
+tells you while a legacy key is still present.
 
 **Request binding is always a gap.** Expected. wokey rewrites the request body, so the
 signed request hash cannot match a client-side value. Everything else still verifies.
 
-**Adapter errors.** wokey may only expose `/v1/chat/completions`. Set
-`api: "openai-completions"` in `~/.pi/agent/wokey.json`.
+**"No API key found" even though a key is set.** The key lives somewhere pi does not
+read (for example a leftover `apiKey` in `wokey.json`), or you only exported
+`WOKEY_API_KEY`, which this extension does not read. Run `/login wokey` and try again.
 
 ## Vendored code
 
@@ -280,8 +300,9 @@ carries no affiliation with, endorsement from, or partnership with wokey.ai, and
 the wokey service strictly as an ordinary paying user.
 
 The wokey platform fronts several upstream providers and offers a wider model catalog
-than this extension currently covers. The integration is deliberately scoped to the three
-models in daily personal use, so no other provider or model is wired in on purpose.
+than this extension currently covers. The integration is deliberately scoped to the four
+models in daily personal use (three GPT, one Claude), so no other provider or model is
+wired in on purpose.
 
 That scope is a starting point rather than a ceiling. Contributions from other developers
 that add further providers or models are welcome: please include tests for the new

@@ -15,14 +15,11 @@
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { PROVIDER_ID, resolveApiKey, resolveConfig, type WokeyConfig } from "./config.ts";
-import { fetchBalance, type BalanceInfo } from "./balance.ts";
-import { activeModels, refreshFromCatalog } from "./models.ts";
-import { createWokeyStream } from "./stream.ts";
+import { PROVIDER_ID, resolveConfig, type WokeyConfig } from "./config.ts";
+import { fetchBalance, WOKEY_API_ROOT, type BalanceInfo } from "./balance.ts";
+import { createWokeyProvider, getLastCatalogWarnings, PROVIDER_NAME } from "./provider.ts";
 import type { ProofReport } from "./verify/probe.ts";
-import { MARK, runMenu, type CommandContext } from "./tui.ts";
-
-export const PROVIDER_NAME = "wokey.ai (verified)";
+import { MARK, runMenu } from "./tui.ts";
 
 interface Stats {
 	verified: number;
@@ -96,73 +93,58 @@ export default function wokeyProvider(pi: ExtensionAPI, config: WokeyConfig = re
 		notify(line, "warning");
 	}
 
-	const streamSimple = createWokeyStream({ config, onReport });
-
-	pi.registerProvider(PROVIDER_ID, {
-		name: PROVIDER_NAME,
-		baseUrl: config.baseUrl,
-		api: config.api,
-		models: activeModels(config),
-		streamSimple,
-	});
+	// One native provider for both routes. Auth, model dispatch, and catalog
+	// refresh all live inside it; pi owns the credential store and the refresh
+	// lifecycle, so there is no unregister/re-register sync here.
+	const provider = createWokeyProvider({ config, onReport });
+	pi.registerProvider(provider);
 
 	pi.registerCommand("wokey", {
-		description: "wokey.ai manager: status, models, set/unset key",
-		handler: (args: unknown, ctx: CommandContext) =>
+		description: "wokey.ai manager: status, models (credentials via /login wokey)",
+		handler: (args, ctx) =>
 			runMenu(
 				{
 					config: () => config,
 					stats: () => ({ ...stats }),
 					last: () => last,
-					refresh: () => syncCatalog(),
+					// Last catalog-overlay warnings, kept by the provider because
+					// the native fetchModels path has no warning channel back
+					// through pi's registry.
+					warnings: () => getLastCatalogWarnings(),
+					// Native catalog refresh through pi's model registry: the
+					// provider's fetchModels overlays the validated live catalog
+					// and retains the last-known lineup on failure.
+					refresh: async () => {
+						await ctx.modelRegistry.refresh({ providers: [PROVIDER_ID] });
+					},
 					balance: () => balance,
-					syncBalance: () => syncBalance(),
+					// Credentials come from pi's registry (auth.json / env), never
+					// from a second key store kept by this extension.
+					syncBalance: async () => {
+						await syncBalance(await ctx.modelRegistry.getApiKeyForProvider(PROVIDER_ID));
+					},
 				},
-				(Array.isArray(args) ? args : String(args ?? "").split(/\s+/)).map(String),
-				ctx as CommandContext,
+				String(args ?? "").split(/\s+/).map(String),
+				ctx,
 			),
 	});
 
 	pi.on("session_start", (_event, ctx) => {
 		ui = ctx.ui;
 		mode = (ctx.mode as string | undefined) ?? "tui";
-		notify(`wokey: ${PROVIDER_NAME} ready — ${activeModels(config).length} GPT models, proof probing ${config.verify ? "on" : "off"} (run /wokey for status)`);
-		// Fire-and-forget: a hung relay catalog call must not block session start.
-		void syncCatalog();
+		notify(`wokey: ${PROVIDER_NAME} ready — ${provider.getModels().length} models, proof probing ${config.verify ? "on" : "off"} (run /wokey for status)`);
+		// Fire-and-forget through the native refresh path: a hung relay catalog
+		// call must not block session start, and a failure keeps the baked-in lineup.
+		void ctx.modelRegistry.refresh({ providers: [PROVIDER_ID] }).catch(() => {});
 	});
-
-	/** Best-effort reconciliation of context limits and rates against the live catalog. */
-	async function syncCatalog(): Promise<void> {
-		const key = resolveApiKey();
-		if (!key) return;
-		try {
-			const res = await fetch(`${config.baseUrl}/models`, {
-				headers: { authorization: `Bearer ${key}` },
-				signal: AbortSignal.timeout(2000),
-			});
-			if (!res.ok) return;
-			const { updated, warnings } = refreshFromCatalog(await res.json());
-			for (const w of warnings) notify(`wokey: ${w}`, "warning");
-			if (updated.length > 0) pi.unregisterProvider(PROVIDER_ID);
-			pi.registerProvider(PROVIDER_ID, {
-				name: PROVIDER_NAME,
-				baseUrl: config.baseUrl,
-				api: config.api,
-				models: activeModels(config),
-				streamSimple,
-			});
-		} catch {
-			// Keep the baked-in lineup; a catalog hiccup must not break startup.
-		}
-	}
 
 	/**
 	 * Best-effort account-balance read for the status panel. Failures leave the
 	 * previous value (or none) in place: a balance lookup that fails must not
 	 * blank the panel or stall it, and a stale number beats no number.
 	 */
-	async function syncBalance(): Promise<void> {
-		const next = await fetchBalance(config, resolveApiKey());
+	async function syncBalance(key: string | undefined): Promise<void> {
+		const next = await fetchBalance(WOKEY_API_ROOT, key);
 		if (next) balance = next;
 	}
 
@@ -172,7 +154,7 @@ export default function wokeyProvider(pi: ExtensionAPI, config: WokeyConfig = re
 		stats: () => ({ ...stats }),
 		config: () => ({ ...config }),
 		last: () => last,
-		syncCatalog,
+		provider,
 		syncBalance,
 		balance: () => balance,
 		reset: () => {

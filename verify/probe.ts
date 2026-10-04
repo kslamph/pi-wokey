@@ -29,7 +29,7 @@ import {
 	type TeeCheck,
 	type TeeProofWire,
 } from "./tee-verify-core.ts";
-import type { WokeyConfig } from "../config.ts";
+import type { WokeyRoute } from "../routes.ts";
 
 export type ProofStatus = "verified" | "verified-with-gaps" | "unproven" | "failed";
 
@@ -39,6 +39,8 @@ export interface ProofVerdict {
 	checks: TeeCheck[];
 	upstreamHost?: string;
 	upstreamPath?: string;
+	/** Signed HTTP method, so the status panel can render the exact signed tuple. */
+	upstreamMethod?: string;
 	pcr0?: string;
 	/** Model string the upstream reported in its own (integrity-bound) response body. */
 	reportedModel?: string;
@@ -52,10 +54,13 @@ export interface ProofReport extends ProofVerdict {
 }
 
 export interface ProbeDeps {
-	config: WokeyConfig;
+	/** Route trust policy this fetch verifies against. */
+	policy: VerificationPolicy;
 	onReport(report: ProofReport): void;
 	/** Model id requested for this call, so the served model can be compared. */
 	expectedModel?: string;
+	/** Served-model reader for this route, over the integrity-bound response bytes. */
+	extractServedModel: WokeyRoute["extractServedModel"];
 	/** Test seam: swap the hardware-attestation verifier for a stub. */
 	attestationVerifier?: AttestationVerifier;
 }
@@ -190,23 +195,15 @@ export function stripTrailingProofEvent(source: ReadableStream<Uint8Array>): Rea
 
 // ── verification ───────────────────────────────────────────────────────────────
 
-/** Pull the upstream's self-reported model out of an SSE Responses stream. */
-function reportedModel(body: Buffer): string | undefined {
-	const text = body.toString("utf8");
-	for (const field of ["response.completed", "response.created"]) {
-		const at = text.lastIndexOf(`event: ${field}`);
-		if (at < 0) continue;
-		const line = text.slice(at).split("\n").find((l) => l.startsWith("data:"));
-		if (!line) continue;
-		try {
-			const parsed = JSON.parse(line.slice(5).trim());
-			const model = parsed?.response?.model ?? parsed?.model;
-			if (typeof model === "string") return model;
-		} catch {
-			/* keep scanning */
-		}
-	}
-	return undefined;
+/**
+ * Trust policy for one verification: the pinned PCR0 anchor plus the route's
+ * exact signed `(host, path, method)` tuple and its request-binding achievability.
+ * Everything route-specific lives here — never in user settings.
+ */
+export interface VerificationPolicy {
+	expectedPcr0: string;
+	endpoint: WokeyRoute["endpoint"];
+	requestBinding: WokeyRoute["requestBinding"];
 }
 
 export interface VerifyInput {
@@ -221,6 +218,13 @@ export interface VerifyInput {
 	requestBytes?: Buffer;
 	/** Model id we asked for, so the served model can be checked against it. */
 	expectedModel?: string;
+	/**
+	 * Served-model reader for this route, over the integrity-bound response bytes.
+	 * The input carries no protocol assumption: Responses events, Anthropic
+	 * `message_start`, or whatever a future route pins. Unknown identity
+	 * (`undefined`) never counts as a match.
+	 */
+	extractServedModel: WokeyRoute["extractServedModel"];
 	/** Test seam: swap the hardware-attestation verifier for a stub. */
 	attestationVerifier?: AttestationVerifier;
 }
@@ -254,7 +258,7 @@ function shortReason(detail: string): string {
 	return detail;
 }
 
-export function verifyExchange(input: VerifyInput, config: WokeyConfig): { report: ProofVerdict } {
+export function verifyExchange(input: VerifyInput, policy: VerificationPolicy): { report: ProofVerdict } {
 	const parsed = parseTeeProofEvent(input.wireBytes);
 	const proof: TeeProofWire | undefined = parsed.proof;
 
@@ -278,10 +282,10 @@ export function verifyExchange(input: VerifyInput, config: WokeyConfig): { repor
 
 	const result = verifyTeeExchange(
 		{
-			expectedPcr0: config.expectedPcr0,
-			// The vendored verifier takes a single host; the authoritative multi-host
-			// gate is applied below, replacing its check.
-			expectedHost: config.expectedHosts[0] ?? config.expectedHost,
+			expectedPcr0: policy.expectedPcr0,
+			// The vendored verifier takes a single host; the policy pins exactly one
+			// measured host per route, so there is nothing to widen here.
+			expectedHost: policy.endpoint.host,
 			requestBody: input.requestBytes,
 			responseBody: delivered.body,
 			proof,
@@ -290,7 +294,7 @@ export function verifyExchange(input: VerifyInput, config: WokeyConfig): { repor
 	);
 
 	// Rename and re-word upstream's checks: English only, one concise reason per case.
-	// Its single-host check is dropped in favour of the set-based gate below.
+	// Its single-host check is dropped in favour of the exact-tuple gates below.
 	const checks = result.checks
 		.filter((c) => c.name !== "上游 host")
 		.map(renameCheck);
@@ -302,10 +306,9 @@ export function verifyExchange(input: VerifyInput, config: WokeyConfig): { repor
 		if (i >= 0) checks[i] = { ...checks[i]!, detail: `${checks[i]!.detail} (${delivered.strippedKeepalives} relay keepalive${delivered.strippedKeepalives === 1 ? "" : "s"} stripped)` };
 	}
 
-	// Upstream host: the signed name must be one we accept, exactly.
-	const accepted = config.expectedHosts.length > 0 ? config.expectedHosts : [config.expectedHost];
+	// Upstream host: the signed name must be the policy's measured host, exactly.
 	const gotHost = String(proof.upstream_host ?? "");
-	const hostOk = accepted.some((h) => gotHost.toLowerCase() === h.toLowerCase());
+	const hostOk = gotHost === policy.endpoint.host;
 	const hostCheck: TeeCheck = {
 		name: "Upstream host",
 		ok: hostOk,
@@ -316,31 +319,43 @@ export function verifyExchange(input: VerifyInput, config: WokeyConfig): { repor
 
 	// An unset anchor means "no opinion", not "pass". Never let a green run imply a
 	// PCR0 comparison happened when it did not.
-	if (!config.expectedPcr0) {
+	if (!policy.expectedPcr0) {
 		const i = checks.findIndex((c) => c.name === "Enclave image (PCR0)");
 		if (i >= 0) checks[i] = { name: checks[i]!.name, ok: false, detail: "no audit PCR0 pinned — image substitution not checked" };
 	}
 
 	// The relay rewrites the request body, so byte-exact binding is unreachable. This is
 	// a documented gap, not a failure: it must never raise a warning. See README.
-	if (config.requestBinding === "unavailable") {
+	if (policy.requestBinding === "unavailable") {
 		const i = checks.findIndex((c) => c.name === "Request binding");
 		if (i >= 0) checks[i] = { name: checks[i]!.name, ok: false, detail: "request body is rewritten by the relay — not checkable (documented gap)" };
 	}
 
+	// Path and method join the host as one exact tuple: no suffixes, no mixes.
 	const path = String(proof.upstream_path ?? "");
-	const pathOk = config.expectedPaths.length === 0 || config.expectedPaths.some((p) => path === p || path.endsWith(p));
+	const pathOk = path === policy.endpoint.path;
 	checks.push({
 		name: "Upstream path",
 		ok: pathOk,
 		detail: pathOk ? path : `unexpected path ${path} — not a known wokey route`,
 	});
 
-	// Which model actually served this, read from the integrity-bound response body.
-	const served = reportedModel(parsed.body);
+	const gotMethod = String(proof.http_method ?? "");
+	const methodOk = gotMethod === policy.endpoint.method;
+	const upstreamMethod = gotMethod || undefined;
+	checks.push({
+		name: "Upstream method",
+		ok: methodOk,
+		detail: methodOk ? gotMethod : `unexpected method ${gotMethod || "(none)"} — expected ${policy.endpoint.method}`,
+	});
+
+	// Which model actually served this, read from the integrity-bound response body
+	// with the route's own reader. Exact equality only: no prefix games, no alias
+	// map — no real Wokey response has needed one.
+	const served = input.extractServedModel(parsed.body);
 	if (input.expectedModel) {
 		const want = input.expectedModel;
-		const matches = served === want || served?.startsWith(want) === true || want.startsWith(served ?? "\u0000") === true;
+		const matches = served === want;
 		checks.push({
 			name: "Served model",
 			ok: matches,
@@ -348,7 +363,7 @@ export function verifyExchange(input: VerifyInput, config: WokeyConfig): { repor
 		});
 	}
 
-	const blocking = checks.filter((c) => c.name !== "Request binding" || config.requestBinding === "verify");
+	const blocking = checks.filter((c) => c.name !== "Request binding" || policy.requestBinding === "verify");
 	const blockingFailed = blocking.some((c) => !c.ok);
 	const gaps = checks.length - blocking.length;
 	const status: ProofStatus = blockingFailed ? "failed" : gaps > 0 ? "verified-with-gaps" : "verified";
@@ -359,8 +374,9 @@ export function verifyExchange(input: VerifyInput, config: WokeyConfig): { repor
 			checks,
 			upstreamHost: proof.upstream_host,
 			upstreamPath: path,
+			upstreamMethod,
 			pcr0: result.attestation.pcr0 ?? undefined,
-			reportedModel: reportedModel(parsed.body),
+			reportedModel: input.extractServedModel(parsed.body),
 			bytes: (input.clientBytes ?? parsed.body).length,
 		},
 	};
@@ -375,8 +391,6 @@ export function createProbingFetch(deps: ProbeDeps): typeof globalThis.fetch {
 	const realFetch = globalThis.fetch.bind(globalThis);
 
 	return async function probingFetch(input: FetchArg, init?: FetchInit): Promise<Response> {
-		if (!deps.config.verify) return realFetch(input, init);
-
 		const startedAt = Date.now();
 		const capture = await captureRequestBytes(input, init);
 		const requestBytes = capture.requestBytes;
@@ -388,8 +402,15 @@ export function createProbingFetch(deps: ProbeDeps): typeof globalThis.fetch {
 				let report: ProofVerdict;
 				try {
 					report = verifyExchange(
-						{ wireBytes, clientBytes, requestBytes, expectedModel: deps.expectedModel, attestationVerifier: deps.attestationVerifier },
-						deps.config,
+						{
+							wireBytes,
+							clientBytes,
+							requestBytes,
+							expectedModel: deps.expectedModel,
+							extractServedModel: deps.extractServedModel,
+							attestationVerifier: deps.attestationVerifier,
+						},
+						deps.policy,
 					).report;
 				} catch (error) {
 					report = {

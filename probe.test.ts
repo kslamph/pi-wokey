@@ -15,10 +15,12 @@ import { Buffer } from "node:buffer";
 import { describe, expect, it } from "vitest";
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
-import { DEFAULT_CONFIG, PUBLISHED_PCR0, resolveConfig, type WokeyConfig } from "./config.ts";
+import { DEFAULT_CONFIG, PUBLISHED_PCR0, resolveConfig } from "./config.ts";
+import { getRoute } from "./routes.ts";
 import { buildV2Statement, sha256 } from "./verify/signing.ts";
 import { parseTeeProofEvent } from "./verify/tee-verify-core.ts";
 import { stripTrailingProofEvent, verifyExchange } from "./verify/probe.ts";
+import type { VerificationPolicy } from "./verify/probe.ts";
 import type { AttestationVerifier, TeeProofWire } from "./verify/tee-verify-core.ts";
 
 const VECTORS = JSON.parse(readFileSync(new URL("./test-fixtures/signing-vectors.json", import.meta.url), "utf8")) as {
@@ -85,6 +87,17 @@ function sseWithProof(proof: TeeProofWire, body = "event: response.completed\nda
 
 function findCheck(checks: { name: string; ok: boolean }[], name: string) {
 	return checks.find((c) => c.name === name);
+}
+
+/** GPT route under test plus a policy built from it. Per-route binding stays reachable: pass `{ requestBinding: "verify" }` to pin a strict `verified`. */
+const GPT_ROUTE = getRoute("openai-codex");
+function gptPolicy(over: Partial<VerificationPolicy> = {}): VerificationPolicy {
+	return {
+		expectedPcr0: resolveConfig().expectedPcr0,
+		endpoint: GPT_ROUTE.endpoint,
+		requestBinding: GPT_ROUTE.requestBinding,
+		...over,
+	};
 }
 
 describe("statement builder (vendored golden vectors)", () => {
@@ -165,12 +178,10 @@ describe("trailing proof-event stripper", () => {
 });
 
 describe("verification gates", () => {
-	const config: WokeyConfig = resolveConfig();
-
 	it("reports 'unproven' when the response carries no proof", () => {
 		const { report } = verifyExchange(
-			{ wireBytes: Buffer.from("event: response.completed\ndata: {}\n\n", "utf8"), attestationVerifier: stubAttestation() },
-			config,
+			{ extractServedModel: GPT_ROUTE.extractServedModel, wireBytes: Buffer.from("event: response.completed\ndata: {}\n\n", "utf8"), attestationVerifier: stubAttestation() },
+			gptPolicy(),
 		);
 		expect(report.status).toBe("unproven");
 		expect(report.checks.every((c) => c.ok)).toBe(false);
@@ -182,8 +193,8 @@ describe("verification gates", () => {
 		const roguePcr0 = "1".repeat(96);
 		const proof = makeProof({ pcr0: roguePcr0 });
 		const { report } = verifyExchange(
-			{ wireBytes: sseWithProof(proof), attestationVerifier: stubAttestation({ pcr0: roguePcr0 }) },
-			config,
+			{ extractServedModel: GPT_ROUTE.extractServedModel, wireBytes: sseWithProof(proof), attestationVerifier: stubAttestation({ pcr0: roguePcr0 }) },
+			gptPolicy(),
 		);
 		expect(findCheck(report.checks, "Enclave image (PCR0)")?.ok).toBe(false);
 		expect(report.status).toBe("failed");
@@ -192,8 +203,8 @@ describe("verification gates", () => {
 	it("flags an unset PCR0 anchor instead of reporting a pass", () => {
 		const proof = makeProof();
 		const { report } = verifyExchange(
-			{ wireBytes: sseWithProof(proof), attestationVerifier: stubAttestation() },
-			resolveConfig({ expectedPcr0: "" }),
+			{ extractServedModel: GPT_ROUTE.extractServedModel, wireBytes: sseWithProof(proof), attestationVerifier: stubAttestation() },
+			gptPolicy({ expectedPcr0: "" }),
 		);
 		expect(findCheck(report.checks, "Enclave image (PCR0)")?.ok).toBe(false);
 		expect(report.status).toBe("failed");
@@ -202,8 +213,8 @@ describe("verification gates", () => {
 	it("rejects a signature key the attestation does not endorse", () => {
 		const proof = makeProof({ public_key: Buffer.alloc(32, 9).toString("base64") });
 		const { report } = verifyExchange(
-			{ wireBytes: sseWithProof(proof), attestationVerifier: stubAttestation() },
-			config,
+			{ extractServedModel: GPT_ROUTE.extractServedModel, wireBytes: sseWithProof(proof), attestationVerifier: stubAttestation() },
+			gptPolicy(),
 		);
 		expect(findCheck(report.checks, "Signing key binding")?.ok).toBe(false);
 	});
@@ -211,8 +222,8 @@ describe("verification gates", () => {
 	it("rejects a nonce that disagrees between proof and attestation", () => {
 		const proof = makeProof();
 		const { report } = verifyExchange(
-			{ wireBytes: sseWithProof(proof), attestationVerifier: stubAttestation({ nonce: Buffer.from("other", "utf8").toString("base64") }) },
-			config,
+			{ extractServedModel: GPT_ROUTE.extractServedModel, wireBytes: sseWithProof(proof), attestationVerifier: stubAttestation({ nonce: Buffer.from("other", "utf8").toString("base64") }) },
+			gptPolicy(),
 		);
 		expect(findCheck(report.checks, "Nonce binding")?.ok).toBe(false);
 	});
@@ -220,8 +231,8 @@ describe("verification gates", () => {
 	it("rejects an unsigned upstream host", () => {
 		const proof = makeProof({ upstream_host: "wokey.internal" });
 		const { report } = verifyExchange(
-			{ wireBytes: sseWithProof(proof), attestationVerifier: stubAttestation() },
-			config,
+			{ extractServedModel: GPT_ROUTE.extractServedModel, wireBytes: sseWithProof(proof), attestationVerifier: stubAttestation() },
+			gptPolicy(),
 		);
 		expect(findCheck(report.checks, "Upstream host")?.ok).toBe(false);
 		expect(report.status).toBe("failed");
@@ -230,8 +241,8 @@ describe("verification gates", () => {
 	it("rejects an unexpected upstream path even on the right host", () => {
 		const proof = makeProof({ upstream_path: "/v1/cheap" });
 		const { report } = verifyExchange(
-			{ wireBytes: sseWithProof(proof), attestationVerifier: stubAttestation() },
-			config,
+			{ extractServedModel: GPT_ROUTE.extractServedModel, wireBytes: sseWithProof(proof), attestationVerifier: stubAttestation() },
+			gptPolicy(),
 		);
 		expect(findCheck(report.checks, "Upstream path")?.ok).toBe(false);
 	});
@@ -242,22 +253,22 @@ describe("verification gates", () => {
 	// not api.openai.com, and wokey rewrites the body before the enclave sees it.
 	it("accepts the real upstream the relay actually signs", () => {
 		const proof = makeProof({ upstream_host: "chatgpt.com", upstream_path: "/backend-api/codex/responses" });
-		const { report } = verifyExchange({ wireBytes: sseWithProof(proof), attestationVerifier: stubAttestation() }, config);
+		const { report } = verifyExchange({ extractServedModel: GPT_ROUTE.extractServedModel, wireBytes: sseWithProof(proof), attestationVerifier: stubAttestation() }, gptPolicy());
 		expect(findCheck(report.checks, "Upstream host")?.ok).toBe(true);
 		expect(findCheck(report.checks, "Upstream path")?.ok).toBe(true);
 	});
 
 	it("still rejects api.openai.com, which the GPT lane never signs", () => {
 		const proof = makeProof({ upstream_host: "api.openai.com" });
-		const { report } = verifyExchange({ wireBytes: sseWithProof(proof), attestationVerifier: stubAttestation() }, config);
+		const { report } = verifyExchange({ extractServedModel: GPT_ROUTE.extractServedModel, wireBytes: sseWithProof(proof), attestationVerifier: stubAttestation() }, gptPolicy());
 		expect(findCheck(report.checks, "Upstream host")?.ok).toBe(false);
 	});
 
 	it("does not check request binding when the request bytes were not captured", () => {
 		const proof = makeProof();
 		const { report } = verifyExchange(
-			{ wireBytes: sseWithProof(proof), attestationVerifier: stubAttestation() },
-			config,
+			{ extractServedModel: GPT_ROUTE.extractServedModel, wireBytes: sseWithProof(proof), attestationVerifier: stubAttestation() },
+			gptPolicy(),
 		);
 		expect(findCheck(report.checks, "Request binding")).toBeUndefined();
 	});
@@ -265,11 +276,11 @@ describe("verification gates", () => {
 	it("surfaces the model the upstream reported in its own response body", () => {
 		const proof = makeProof();
 		const { report } = verifyExchange(
-			{
+			{ extractServedModel: GPT_ROUTE.extractServedModel,
 				wireBytes: sseWithProof(proof, 'event: response.completed\ndata: {"response":{"model":"gpt-6.1-sol"}}\n\n'),
 				attestationVerifier: stubAttestation(),
 			},
-			config,
+			gptPolicy(),
 		);
 		expect(report.reportedModel).toBe("gpt-6.1-sol");
 	});
@@ -278,8 +289,8 @@ describe("verification gates", () => {
 		const body = "event: response.completed\ndata: {}\n\n";
 		const proof = makeProof({ response_body_sha256: createHash("sha256").update(body, "utf8").digest("hex") });
 		const { report } = verifyExchange(
-			{ wireBytes: sseWithProof(proof, body), attestationVerifier: stubAttestation() },
-			config,
+			{ extractServedModel: GPT_ROUTE.extractServedModel, wireBytes: sseWithProof(proof, body), attestationVerifier: stubAttestation() },
+			gptPolicy(),
 		);
 		// The stub bypasses the Ed25519 half, so the signature check is expected
 		// to fail; everything this extension owns must pass.
@@ -292,6 +303,110 @@ describe("verification gates", () => {
 	});
 });
 
+describe("Anthropic route verification", () => {
+	const ANTHROPIC = getRoute("anthropic-direct");
+	const policy = (over: Partial<VerificationPolicy> = {}): VerificationPolicy => ({
+		expectedPcr0: resolveConfig().expectedPcr0,
+		endpoint: ANTHROPIC.endpoint,
+		requestBinding: ANTHROPIC.requestBinding,
+		...over,
+	});
+	const claudeBody = (model: string) =>
+		`event: message_start\ndata: {"type":"message_start","message":{"id":"msg_01","type":"message","role":"assistant","model":"${model}","content":[]}}\n\n`;
+	const claudeProof = (over: Partial<TeeProofWire> = {}) =>
+		makeProof({ upstream_host: "api.anthropic.com", upstream_path: "/v1/messages", http_method: "POST", ...over });
+	const extract = ANTHROPIC.extractServedModel;
+
+	it("passes the served-model check for the requested Claude model", () => {
+		const body = claudeBody("claude-opus-5-5");
+		const proof = claudeProof({ response_body_sha256: createHash("sha256").update(body, "utf8").digest("hex") });
+		const { report } = verifyExchange(
+			{ wireBytes: sseWithProof(proof, body), expectedModel: "claude-opus-5-5", extractServedModel: extract, attestationVerifier: stubAttestation() },
+			policy(),
+		);
+		expect(findCheck(report.checks, "Served model")?.ok).toBe(true);
+		expect(report.reportedModel).toBe("claude-opus-5-5");
+	});
+
+	it("flags a Claude substitution and names both models", () => {
+		const body = claudeBody("claude-opus-5-5");
+		const proof = claudeProof({ response_body_sha256: createHash("sha256").update(body, "utf8").digest("hex") });
+		const { report } = verifyExchange(
+			{ wireBytes: sseWithProof(proof, body), expectedModel: "claude-opus-9-9", extractServedModel: extract, attestationVerifier: stubAttestation() },
+			policy(),
+		);
+		const c = report.checks.find((c) => c.name === "Served model");
+		expect(c?.ok).toBe(false);
+		expect(c?.detail).toContain("claude-opus-5-5");
+		expect(c?.detail).toContain("claude-opus-9-9");
+	});
+
+	it("reads the model with the Anthropic reader, not the Responses reader", () => {
+		const body = claudeBody("claude-opus-5-5");
+		const proof = claudeProof({ response_body_sha256: createHash("sha256").update(body, "utf8").digest("hex") });
+		const gptExtract = getRoute("openai-codex").extractServedModel;
+		expect(gptExtract(Buffer.from(body, "utf8"))).toBeUndefined();
+		const { report } = verifyExchange(
+			{ wireBytes: sseWithProof(proof, body), expectedModel: "claude-opus-5-5", extractServedModel: gptExtract, attestationVerifier: stubAttestation() },
+			policy(),
+		);
+		expect(findCheck(report.checks, "Served model")?.ok).toBe(false);
+	});
+
+	it("still passes the existing GPT fixture under the GPT route policy", () => {
+		const body = 'event: response.completed\ndata: {"response":{"model":"gpt-6-luna"}}\n\n';
+		const proof = makeProof({ response_body_sha256: createHash("sha256").update(body, "utf8").digest("hex") });
+		const { report } = verifyExchange(
+			{ wireBytes: sseWithProof(proof, body), expectedModel: "gpt-6-luna", extractServedModel: GPT_ROUTE.extractServedModel, attestationVerifier: stubAttestation() },
+			gptPolicy(),
+		);
+		expect(findCheck(report.checks, "Served model")?.ok).toBe(true);
+		expect(report.reportedModel).toBe("gpt-6-luna");
+	});
+});
+
+describe("exact endpoint tuples", () => {
+	const GPT = getRoute("openai-codex");
+	const ANTHROPIC = getRoute("anthropic-direct");
+	const anthropicPolicy = (): VerificationPolicy => ({
+		expectedPcr0: resolveConfig().expectedPcr0,
+		endpoint: ANTHROPIC.endpoint,
+		requestBinding: ANTHROPIC.requestBinding,
+	});
+	const extract = GPT.extractServedModel;
+	const check = (proof: TeeProofWire, routePolicy: VerificationPolicy, name: string) =>
+		verifyExchange({ wireBytes: sseWithProof(proof), extractServedModel: extract, attestationVerifier: stubAttestation() }, routePolicy)
+			.report.checks.find((c) => c.name === name);
+
+	it("fails a wrong host, a wrong path, and a wrong method each", () => {
+		expect(check(makeProof({ upstream_host: "api.anthropic.com" }), gptPolicy(), "Upstream host")?.ok).toBe(false);
+		expect(check(makeProof({ upstream_path: "/v1/cheap" }), gptPolicy(), "Upstream path")?.ok).toBe(false);
+		expect(check(makeProof({ http_method: "GET" }), gptPolicy(), "Upstream method")?.ok).toBe(false);
+	});
+
+	it("rejects a host from one route combined with a path from another", () => {
+		// Anthropic host on the GPT path: host gate fails under the GPT policy.
+		expect(check(makeProof({ upstream_host: "api.anthropic.com" }), gptPolicy(), "Upstream host")?.ok).toBe(false);
+		// GPT path on the Anthropic host: path gate fails under the Anthropic policy.
+		const crossed = makeProof({ upstream_host: "api.anthropic.com", upstream_path: "/backend-api/codex/responses" });
+		expect(check(crossed, anthropicPolicy(), "Upstream path")?.ok).toBe(false);
+		// And the mirror: GPT host with the Anthropic path under the GPT policy.
+		const mirrored = makeProof({ upstream_host: "chatgpt.com", upstream_path: "/v1/messages" });
+		expect(check(mirrored, gptPolicy(), "Upstream path")?.ok).toBe(false);
+	});
+
+	it("does not accept path suffixes or extra segments", () => {
+		expect(check(makeProof({ upstream_path: "/prefix/backend-api/codex/responses" }), gptPolicy(), "Upstream path")?.ok).toBe(false);
+		expect(check(makeProof({ upstream_path: "/backend-api/codex/responses/extra" }), gptPolicy(), "Upstream path")?.ok).toBe(false);
+	});
+
+	it("matches the tuple exactly: case and method included", () => {
+		expect(check(makeProof({ upstream_host: "ChatGPT.com" }), gptPolicy(), "Upstream host")?.ok).toBe(false);
+		expect(check(makeProof({ http_method: "post" }), gptPolicy(), "Upstream method")?.ok).toBe(false);
+		expect(check(makeProof(), gptPolicy(), "Upstream method")?.ok).toBe(true);
+	});
+});
+
 describe("config", () => {
 	it("pins an audited PCR0 rather than trusting the wire", () => {
 		expect(DEFAULT_CONFIG.expectedPcr0).toBe(PUBLISHED_PCR0);
@@ -299,7 +414,6 @@ describe("config", () => {
 	});
 });
 describe("English-only, concise, per-case reasons", () => {
-	const cfg = resolveConfig();
 	const find = (checks: { name: string; ok: boolean; detail?: string }[], name: string) =>
 		checks.find((c) => c.name === name);
 	const text = (r: { checks: { name: string; detail: string }[] }) =>
@@ -307,13 +421,13 @@ describe("English-only, concise, per-case reasons", () => {
 
 	it("never emits non-English text", () => {
 		const proof = makeProof({ upstream_host: "wokey.internal" });
-		const { report } = verifyExchange({ wireBytes: sseWithProof(proof), attestationVerifier: stubAttestation() }, cfg);
+		const { report } = verifyExchange({ extractServedModel: GPT_ROUTE.extractServedModel, wireBytes: sseWithProof(proof), attestationVerifier: stubAttestation() }, gptPolicy());
 		expect(text(report)).not.toMatch(/[一-鿿]/);
 	});
 
 	it("states the actual served model and expected host on a host failure", () => {
 		const proof = makeProof({ upstream_host: "wokey.internal", upstream_path: "/x" });
-		const { report } = verifyExchange({ wireBytes: sseWithProof(proof), attestationVerifier: stubAttestation() }, cfg);
+		const { report } = verifyExchange({ extractServedModel: GPT_ROUTE.extractServedModel, wireBytes: sseWithProof(proof), attestationVerifier: stubAttestation() }, gptPolicy());
 		expect(find(report.checks, "Upstream host")?.detail).toBe("served from wokey.internal — not the official endpoint");
 	});
 
@@ -321,8 +435,8 @@ describe("English-only, concise, per-case reasons", () => {
 		const body = 'event: response.completed\ndata: {"response":{"model":"gpt-6-luna"}}\n\n';
 		const proof = makeProof({ response_body_sha256: createHash("sha256").update(body, "utf8").digest("hex") });
 		const { report } = verifyExchange(
-			{ wireBytes: sseWithProof(proof, body), expectedModel: "gpt-6-astra", attestationVerifier: stubAttestation() },
-			cfg,
+			{ extractServedModel: GPT_ROUTE.extractServedModel, wireBytes: sseWithProof(proof, body), expectedModel: "gpt-6-astra", attestationVerifier: stubAttestation() },
+			gptPolicy(),
 		);
 		const c = find(report.checks, "Served model");
 		expect(c?.ok).toBe(false);
@@ -334,8 +448,8 @@ describe("English-only, concise, per-case reasons", () => {
 		const body = 'event: response.completed\ndata: {"response":{"model":"gpt-6-luna"}}\n\n';
 		const proof = makeProof({ response_body_sha256: createHash("sha256").update(body, "utf8").digest("hex") });
 		const { report } = verifyExchange(
-			{ wireBytes: sseWithProof(proof, body), expectedModel: "gpt-6-luna", attestationVerifier: stubAttestation() },
-			cfg,
+			{ extractServedModel: GPT_ROUTE.extractServedModel, wireBytes: sseWithProof(proof, body), expectedModel: "gpt-6-luna", attestationVerifier: stubAttestation() },
+			gptPolicy(),
 		);
 		expect(find(report.checks, "Served model")?.ok).toBe(true);
 	});
@@ -344,8 +458,8 @@ describe("English-only, concise, per-case reasons", () => {
 		const proof = makeProof();
 		// Request bytes must be captured for the check to exist at all.
 		const { report } = verifyExchange(
-			{ wireBytes: sseWithProof(proof), requestBytes: Buffer.from('{"model":"gpt-6-luna"}'), attestationVerifier: stubAttestation() },
-			cfg,
+			{ extractServedModel: GPT_ROUTE.extractServedModel, wireBytes: sseWithProof(proof), requestBytes: Buffer.from('{"model":"gpt-6-luna"}'), attestationVerifier: stubAttestation() },
+			gptPolicy(),
 		);
 		expect(find(report.checks, "Request binding")?.ok).toBe(false);
 		expect(find(report.checks, "Request binding")?.detail).toMatch(/documented gap/);
@@ -353,11 +467,11 @@ describe("English-only, concise, per-case reasons", () => {
 });
 
 describe("accepted upstream hosts", () => {
-	const hostOf = (host: string, cfg = resolveConfig()) =>
-		verifyExchange({ wireBytes: sseWithProof(makeProof({ upstream_host: host })), attestationVerifier: stubAttestation() }, cfg)
+	const hostOf = (host: string) =>
+		verifyExchange({ extractServedModel: GPT_ROUTE.extractServedModel, wireBytes: sseWithProof(makeProof({ upstream_host: host })), attestationVerifier: stubAttestation() }, gptPolicy())
 			.report.checks.find((c) => c.name === "Upstream host");
 
-	it("accepts only the measured route by default", () => {
+	it("accepts only the measured route", () => {
 		expect(hostOf("chatgpt.com")?.ok).toBe(true);
 		expect(hostOf("api.openai.com")?.ok).toBe(false);
 	});
@@ -367,14 +481,10 @@ describe("accepted upstream hosts", () => {
 		expect(hostOf("chatgpt.com.evil.net")?.ok).toBe(false);
 	});
 
-	it("accepts a second route only once it is explicitly added", () => {
-		const wide = resolveConfig({ expectedHosts: ["chatgpt.com", "api.openai.com"] });
-		expect(hostOf("api.openai.com", wide)?.ok).toBe(true);
-		expect(hostOf("chatgpt.com", wide)?.ok).toBe(true);
-		expect(hostOf("evil.chatgpt.com", wide)?.ok).toBe(false);
-	});
-
-	it("falls back to expectedHost when no list is set", () => {
-		expect(hostOf("chatgpt.com", resolveConfig({ expectedHosts: [] }))?.ok).toBe(true);
+	// Trust anchors are code-pinned on the route profile, not user-configurable:
+	// there is no settings knob that widens the accepted host anymore. A second
+	// route arrives only as a new measured route profile (Task 3 adds anthropic).
+	it("pins the accepted host on the route, not in user settings", () => {
+		expect(getRoute("openai-codex").endpoint.host).toBe("chatgpt.com");
 	});
 });

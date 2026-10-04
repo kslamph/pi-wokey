@@ -59,7 +59,10 @@ function harness(mode: RunMode = "tui", config?: Partial<WokeyConfig>): Harness 
 		},
 	};
 	wokeyProvider(pi as never, { ...resolveConfig(), verify: true, notifyOnFailure: true, ...config });
-	for (const fn of handlers.get("session_start") ?? []) fn({}, { mode, hasUI: mode !== "print", ui: { notify } });
+	// The native session-start path refreshes the catalog through pi's model
+	// registry; the harness stands in a resolving registry here.
+	const modelRegistry = { refresh: vi.fn(() => Promise.resolve()), getApiKeyForProvider: vi.fn(() => Promise.resolve(undefined)) };
+	for (const fn of handlers.get("session_start") ?? []) fn({}, { mode, hasUI: mode !== "print", ui: { notify }, modelRegistry });
 	// The startup "ready" notice is informational; keep it out of the assertions.
 	notify.mockClear();
 	const exposed = (pi as unknown as { __wokey: { report(r: ProofReport): void; stats(): Stats } }).__wokey;
