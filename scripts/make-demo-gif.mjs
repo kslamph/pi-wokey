@@ -1,11 +1,13 @@
 /**
  * Generate the README demo GIF for the /wokey TUI.
  *
- * This drives the **real** `runMenu` / `selectOne` / `infoPanel` code from
- * ../tui.ts with a capturing `ctx.ui.custom`, a theme that emits truecolor ANSI,
- * and synthetic ProofReports (a clean verified exchange, then a failed one). The
- * rendered lines are converted to PNGs with ImageMagick's pango coder and
- * assembled into an animated GIF.
+ * This drives the **real** `runMenu` / `selectOne` / `infoPanel` / model-selector
+ * code from ../tui.ts with a capturing `ctx.ui.custom`, a theme that emits truecolor
+ * ANSI, and synthetic ProofReports (a clean verified exchange, then a failed one).
+ * Act 1 walks the menu into the model selector (vendor tabs, an opt-in model toggled
+ * on) and into the status panel (trust anchors folded out and back); act 2 shows the
+ * same status panel after a failed verification. The rendered lines are converted to
+ * PNGs with ImageMagick's pango coder and assembled into an animated GIF.
  *
  * Look: pure monochrome (black canvas, white text, dim grey for everything
  * else, no hue), every frame padded to the same 100xN character grid and
@@ -27,17 +29,20 @@ import { fileURLToPath } from "node:url";
 const ROOT = resolve(fileURLToPath(new URL("..", import.meta.url)));
 
 // ── clean, non-personal demo environment ──────────────────────────────────────
-// The status panel prints the settings path and a masked key; point both at a
-// throwaway file so the demo shows `.pi/agent/wokey.json`, not a real home dir.
+// The expanded status panel prints the settings path, so point it at a throwaway
+// file to show `.pi/agent/wokey.json` instead of a real home dir. The file holds
+// preferences only — no legacy `apiKey` — so the panel renders its normal state
+// (`auth … /login wokey`) rather than the retired-key migration warning.
 const SANDBOX = mkdtempSync(join(tmpdir(), "wokey-demo-"));
 process.chdir(SANDBOX);
 mkdirSync(join(SANDBOX, ".pi", "agent"), { recursive: true });
-writeFileSync(join(SANDBOX, ".pi", "agent", "wokey.json"), JSON.stringify({ apiKey: "sk-wokey-demo-0123456789abcdef" }));
+writeFileSync(join(SANDBOX, ".pi", "agent", "wokey.json"), "{}\n");
 process.env.WOKEY_CONFIG = ".pi/agent/wokey.json";
 
 const tuiMod = await import(`${ROOT}/tui.ts`);
 const { runMenu, MARK } = tuiMod;
 const { resolveConfig } = await import(`${ROOT}/config.ts`);
+const { allSpecs, enabledModelIds } = await import(`${ROOT}/models.ts`);
 
 // The TUI's status marks are color emoji, which would break the monochrome
 // theme. Swap them for glyphs in the same font as the rest of the text; this
@@ -48,17 +53,26 @@ MARK.failed = "\u2717"; // ballot x
 MARK.unproven = "\u25b3"; // hollow triangle
 
 // Raw terminal key sequences, as `handleInput` receives them from pi.
-const KEYS = { up: "\x1b[A", down: "\x1b[B", enter: "\r", escape: "\x1b", more: "m" };
+const KEYS = {
+	up: "\x1b[A",
+	down: "\x1b[B",
+	left: "\x1b[D",
+	right: "\x1b[C",
+	space: " ",
+	enter: "\r",
+	escape: "\x1b",
+	more: "m",
+};
 
 // Terminal grid. Every frame renders into the same box at the same offset, so
 // the GIF reads as one window whose content changes in place, not as text that
 // re-centers and resizes on each frame.
-const WIDTH = 100; // columns handed to the components (truncateToWidth)
-const FONT = "JetBrainsMono Nerd Font";
+const WIDTH = 112; // columns handed to the components (truncateToWidth)
+const FONT = "JetBrainsMono Nerd Font,DejaVu Sans Mono"; // fallback renders ❯, which JetBrains Mono lacks
 const FONT_SIZE = 13000; // pango units (thousandths of a point)
 const BG = "#000000";
-const CANVAS_W = 1088;
-const CANVAS_H = 624; // 25 rows: the tallest frame is the expanded status panel
+const CANVAS_W = 1168; // 112 cols + 2*PAD_X at 10.00px/col
+const CANVAS_H = 720; // 29 rows: the tallest frame is the expanded status panel
 const PAD_X = 24;
 const PAD_Y = 12;
 const FRAME_DELAY_MS = 2500; // every frame holds for the same beat
@@ -94,7 +108,14 @@ const invert = (hex) => {
 };
 
 // ── ANSI (SGR) -> pango markup ─────────────────────────────────────────────────
-const esc = (s) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+// Escape markup metacharacters. U+276F (❯, the selection pointer) is emitted as
+// an entity so run() can split it out of colored runs (see below).
+const esc = (s) =>
+	s
+		.replace(/&/g, "&amp;")
+		.replace(/</g, "&lt;")
+		.replace(/>/g, "&gt;")
+		.replace(/❯/g, "&#x276F;");
 // Invert every colour the markup asks for (see `invert` above).
 const invertMarkup = (markup) => markup.replace(/foreground="(#[0-9a-f]{6})"/g, (_, hex) => `foreground="${invert(hex)}"`);
 function lineToMarkup(line) {
@@ -103,10 +124,19 @@ function lineToMarkup(line) {
 	let fg = "#ffffff";
 	let bold = false;
 	let out = "";
+	const POINTER = "&#x276F;"; // see esc(): the ❯ selection pointer as an entity
 	const run = (text) => {
 		if (!text) return;
 		const attrs = `foreground="${fg}"${bold ? ' font_weight="bold"' : ""}`;
-		out += `<span ${attrs}>${esc(text)}</span>`;
+		// The pointer takes DejaVu Sans Mono explicitly: JetBrainsMono Nerd Font
+		// ships its own ❯ (drawn as ")") and, first in the stack, always wins
+		// fallback. DejaVu holds the glyph directly, so no fallback is needed
+		// and the nested span renders a real ❯.
+		const chunks = esc(text).split(POINTER);
+		chunks.forEach((chunk, i) => {
+			if (chunk) out += `<span ${attrs}>${chunk}</span>`;
+			if (i < chunks.length - 1) out += `<span font_family="DejaVu Sans Mono" ${attrs}>${POINTER}</span>`;
+		});
 	};
 	for (const match of line.matchAll(re)) {
 		run(line.slice(last, match.index));
@@ -179,11 +209,18 @@ function deps(signatureOk) {
 		config: () => resolveConfig(),
 		stats: () => ({ verified: 12, gapped: 1, failed: signatureOk ? 0 : 1, unproven: 0 }),
 		last: () => r,
+		warnings: () => [],
 		refresh: async () => {},
 		// The demo must not touch the real account, so the balance is synthetic
 		// and the fetch is a no-op — the panel code path is still the real one.
 		balance: () => ({ availableUsd: 24.5, reservedUsd: 0 }),
 		syncBalance: async () => {},
+		// Real rows and the real default lineup, so the selector frames show the
+		// models, rates, tabs and checked set a user would see. Toggling is live;
+		// saving is a no-op so the demo never writes a settings file.
+		allModels: () => allSpecs(),
+		enabledModels: () => enabledModelIds(),
+		saveModels: async () => {},
 	};
 }
 
@@ -228,23 +265,33 @@ const push = (lines, delay = FRAME_DELAY_MS) => {
 	frames.push({ lines: block, delay });
 };
 
-// Act 1 — a clean walkthrough ending in a verified exchange.
+// Act 1 — menu → model selector → status: the selector shows the real lineup,
+// vendor switching, an opt-in model toggled on; the status panel shows a verified
+// exchange with the trust anchors folded out via `m` and back in.
 {
 	const h = harness();
 	void runMenu(deps(true), [], h.ctx);
+
 	const menu = await h.next();
 	push(render(menu));
-	menu.handleInput(KEYS.down);
+	menu.handleInput(KEYS.down); // move to Models
 	push(render(menu));
 	menu.handleInput(KEYS.enter);
+
 	const models = await h.next();
+	push(render(models)); // OpenAI tab: the verified default lineup, three checked
+	models.handleInput(KEYS.right); // → Anthropic
 	push(render(models));
-	models.handleInput(KEYS.escape);
+	models.handleInput(KEYS.right); // → Zhipu, the opt-in unverified tab
+	push(render(models));
+	models.handleInput(KEYS.space); // toggle GLM-5.3 on
+	push(render(models));
+	models.handleInput(KEYS.escape); // cancel: nothing is written
+
 	const menu2 = await h.next();
 	push(render(menu2));
-	menu2.handleInput(KEYS.up);
-	push(render(menu2));
-	menu2.handleInput(KEYS.enter);
+	menu2.handleInput(KEYS.enter); // Status is the first item
+
 	const verified = await h.next();
 	push(render(verified));
 	// Fold the trust anchors out with `m`, then back in again: the same panel,

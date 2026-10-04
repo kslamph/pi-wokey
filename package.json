@@ -1,6 +1,6 @@
 {
 	"name": "pi-wokey",
-	"version": "0.6.1",
+	"version": "0.6.2",
 	"description": "pi provider for wokey.ai GPT and Claude models over native OpenAI Responses and Anthropic Messages routes: every response verified against its TEE Proof-of-Observation attestation (warn-only)",
 	"keywords": [
 		"pi-package",

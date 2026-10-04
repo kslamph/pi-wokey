@@ -27,7 +27,7 @@ import { getRoute, type WokeyApi } from "./routes.ts";
 import { createVerifiedStreams } from "./stream.ts";
 import type { ProofReport } from "./verify/probe.ts";
 
-export const PROVIDER_NAME = "wokey.ai (verified)";
+export const PROVIDER_NAME = "wokey.ai";
 
 export interface WokeyProviderOptions {
 	config: WokeyConfig;

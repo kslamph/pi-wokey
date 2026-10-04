@@ -63,7 +63,7 @@ describe("native wokey provider identity", () => {
 	it("registers one provider with id wokey", () => {
 		const p = provider();
 		expect(p.id).toBe("wokey");
-		expect(p.name).toBe("wokey.ai (verified)");
+		expect(p.name).toBe("wokey.ai");
 	});
 
 	it("declares native /login auth and stores no key in custom settings", async () => {

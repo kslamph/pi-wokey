@@ -6,3 +6,7 @@ node_modules/
 
 # Local development notes — never commit
 DEV-NOTES.md
+
+# Working-tree docs — kept locally, never committed
+/docs/superpowers/
+docs/wokey-cache-miss-report.md
