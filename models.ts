@@ -34,7 +34,9 @@ interface WokeyModelBase {
 	cacheWrite: number;
 	contextWindow: number;
 	maxTokens: number;
-	/** wokey marks some rows "(paused)"; kept out of the default lineup. */
+	/** Excluded from every lineup surface (selector, registration, catalog
+	 * warnings): price-dominated siblings and wokey-paused rows live on as
+	 * reference data, and unpausing one is a single-flag change. */
 	paused?: boolean;
 }
 
@@ -137,13 +139,13 @@ const DEFAULT_ENABLED_IDS = new Set<string>(ACTIVE_MODEL_IDS);
 
 export const GPT_MODELS: WokeyGptSpec[] = [
 	{ id: "gpt-6.1-sol", name: "GPT-6.1 Sol", route: "openai-codex", vendor: "OpenAI", input: 0.18, output: 0.9, cacheRead: 0.009, cacheWrite: 0.225, officialInput: 2, officialOutput: 10, contextWindow: 1_050_000, maxTokens: 128_000, reasoningEfforts: ["low", "medium", "high", "xhigh", "max"] as const, gatewayAcceptedEfforts: ["none", "minimal", "low", "medium", "high", "xhigh", "max"] as const },
-	{ id: "gpt-6-sol", name: "GPT-6 Sol", route: "openai-codex", vendor: "OpenAI", input: 0.18, output: 0.9, cacheRead: 0.018, cacheWrite: 0.225, officialInput: 2, officialOutput: 10, contextWindow: 1_050_000, maxTokens: 128_000, reasoningEfforts: ["none", "low", "medium", "high", "xhigh", "max"] as const },
+	{ id: "gpt-6-sol", paused: true, name: "GPT-6 Sol", route: "openai-codex", vendor: "OpenAI", input: 0.18, output: 0.9, cacheRead: 0.018, cacheWrite: 0.225, officialInput: 2, officialOutput: 10, contextWindow: 1_050_000, maxTokens: 128_000, reasoningEfforts: ["none", "low", "medium", "high", "xhigh", "max"] as const },
 	{ id: "gpt-6-luna", name: "GPT-6 Luna", route: "openai-codex", vendor: "OpenAI", input: 0.09, output: 0.45, cacheRead: 0.009, cacheWrite: 0.1125, officialInput: 0.1, officialOutput: 0.5, contextWindow: 1_050_000, maxTokens: 128_000, reasoningEfforts: ["none", "low", "medium", "high", "xhigh", "max"] as const, gatewayAcceptedEfforts: ["none", "low", "medium", "high", "xhigh", "max"] as const },
 	{ id: "gpt-6-astra", name: "GPT-6 Astra", route: "openai-codex", vendor: "OpenAI", input: 0.9, output: 4.5, cacheRead: 0.09, cacheWrite: 1.125, officialInput: 10, officialOutput: 50, contextWindow: 1_050_000, maxTokens: 128_000, reasoningEfforts: ["low", "medium", "high", "xhigh", "max"] as const, gatewayAcceptedEfforts: ["none", "minimal", "low", "medium", "high", "xhigh", "max"] as const },
-	{ id: "gpt-5.6-sol", name: "GPT-5.6 Sol", route: "openai-codex", vendor: "OpenAI", input: 0.44, output: 2.2, cacheRead: 0.044, cacheWrite: 0.55, officialInput: 4, officialOutput: 20, contextWindow: 1_050_000, maxTokens: 128_000, reasoningEfforts: ["none", "minimal", "low", "medium", "high", "xhigh", "max"] as const },
+	{ id: "gpt-5.6-sol", paused: true, name: "GPT-5.6 Sol", route: "openai-codex", vendor: "OpenAI", input: 0.44, output: 2.2, cacheRead: 0.044, cacheWrite: 0.55, officialInput: 4, officialOutput: 20, contextWindow: 1_050_000, maxTokens: 128_000, reasoningEfforts: ["none", "minimal", "low", "medium", "high", "xhigh", "max"] as const },
 	{ id: "gpt-5.6-terra", name: "GPT-5.6 Terra", route: "openai-codex", vendor: "OpenAI", input: 0.2, output: 1.2, cacheRead: 0.02, cacheWrite: 0.25, officialInput: 2, officialOutput: 12, contextWindow: 1_050_000, maxTokens: 128_000, reasoningEfforts: ["none", "low", "medium", "high", "xhigh", "max"] as const },
-	{ id: "gpt-5.6-luna", name: "GPT-5.6 Luna", route: "openai-codex", vendor: "OpenAI", input: 0.12, output: 0.72, cacheRead: 0.012, cacheWrite: 0.15, officialInput: 0.2, officialOutput: 1.2, contextWindow: 1_050_000, maxTokens: 128_000, reasoningEfforts: ["none", "minimal", "low", "medium", "high", "xhigh", "max"] as const },
-	{ id: "gpt-5.5", name: "GPT-5.5", route: "openai-codex", vendor: "OpenAI", input: 0.5, output: 3, cacheRead: 0.05, cacheWrite: 0, officialInput: 5, officialOutput: 30, contextWindow: 1_050_000, maxTokens: 128_000, reasoningEfforts: ["none", "low", "medium", "high", "xhigh"] as const },
+	{ id: "gpt-5.6-luna", paused: true, name: "GPT-5.6 Luna", route: "openai-codex", vendor: "OpenAI", input: 0.12, output: 0.72, cacheRead: 0.012, cacheWrite: 0.15, officialInput: 0.2, officialOutput: 1.2, contextWindow: 1_050_000, maxTokens: 128_000, reasoningEfforts: ["none", "minimal", "low", "medium", "high", "xhigh", "max"] as const },
+	{ id: "gpt-5.5", paused: true, name: "GPT-5.5", route: "openai-codex", vendor: "OpenAI", input: 0.5, output: 3, cacheRead: 0.05, cacheWrite: 0, officialInput: 5, officialOutput: 30, contextWindow: 1_050_000, maxTokens: 128_000, reasoningEfforts: ["none", "low", "medium", "high", "xhigh"] as const },
 ];
 
 /**
@@ -255,28 +257,28 @@ export const COMPLETIONS_MODELS: WokeyCompletionsSpec[] = [
 export const CLAUDE_MODELS: WokeyAnthropicSpec[] = [
 	CLAUDE_OPUS_5_5,
 	{
-		id: "claude-opus-5", name: "Claude Opus 5", route: "anthropic-direct", vendor: "Anthropic",
+		id: "claude-opus-5", paused: true, name: "Claude Opus 5", route: "anthropic-direct", vendor: "Anthropic",
 		input: 0.75, output: 3.75, cacheRead: 0.075, cacheWrite: 0.9375, contextWindow: 1_000_000, maxTokens: 128_000,
 		inputModalities: ["text", "image"],
 		thinkingLevelMap: { off: null, minimal: null, low: null, medium: null, high: null, xhigh: "xhigh", max: "max" },
 		compat: { supportsMidConvoEffort: true, supportsMidConvoSystemMessages: true, supportsMidConvoToolChanges: true, forceAdaptiveThinking: true, supportsTemperature: false, supportsStrictTools: true },
 	},
 	{
-		id: "claude-opus-4-8", name: "Claude Opus 4.8", route: "anthropic-direct", vendor: "Anthropic",
+		id: "claude-opus-4-8", paused: true, name: "Claude Opus 4.8", route: "anthropic-direct", vendor: "Anthropic",
 		input: 0.75, output: 3.75, cacheRead: 0.075, cacheWrite: 0.9375, contextWindow: 1_000_000, maxTokens: 128_000,
 		inputModalities: ["text"],
 		thinkingLevelMap: { off: null, minimal: null, low: null, medium: null, high: null, xhigh: "xhigh", max: "max" },
 		compat: { supportsMidConvoSystemMessages: true, supportsMidConvoToolChanges: true, forceAdaptiveThinking: true, supportsTemperature: false, supportsStrictTools: true },
 	},
 	{
-		id: "claude-opus-4-7", name: "Claude Opus 4.7", route: "anthropic-direct", vendor: "Anthropic",
+		id: "claude-opus-4-7", paused: true, name: "Claude Opus 4.7", route: "anthropic-direct", vendor: "Anthropic",
 		input: 0.75, output: 3.75, cacheRead: 0.075, cacheWrite: 0.9375, contextWindow: 1_000_000, maxTokens: 128_000,
 		inputModalities: ["text"],
 		thinkingLevelMap: { off: null, minimal: null, low: null, medium: null, high: null, xhigh: "xhigh", max: "max" },
 		compat: { forceAdaptiveThinking: true, supportsTemperature: false, supportsStrictTools: true },
 	},
 	{
-		id: "claude-opus-4-6", name: "Claude Opus 4.6", route: "anthropic-direct", vendor: "Anthropic",
+		id: "claude-opus-4-6", paused: true, name: "Claude Opus 4.6", route: "anthropic-direct", vendor: "Anthropic",
 		input: 0.75, output: 3.75, cacheRead: 0.075, cacheWrite: 0.9375, contextWindow: 1_000_000, maxTokens: 128_000,
 		inputModalities: ["text"],
 		thinkingLevelMap: { off: null, minimal: null, low: null, medium: null, high: null, xhigh: null, max: "max" },
@@ -291,27 +293,27 @@ export const CLAUDE_MODELS: WokeyAnthropicSpec[] = [
 		compat: { forceAdaptiveThinking: true, supportsStrictTools: true },
 	},
 	{
-		id: "claude-sonnet-5", name: "Claude Sonnet 5", route: "anthropic-direct", vendor: "Anthropic",
+		id: "claude-sonnet-5", paused: true, name: "Claude Sonnet 5", route: "anthropic-direct", vendor: "Anthropic",
 		input: 0.3, output: 1.5, cacheRead: 0.03, cacheWrite: 0.375, contextWindow: 1_000_000, maxTokens: 128_000,
 		inputModalities: ["text"],
 		thinkingLevelMap: { off: null, minimal: null, low: null, medium: null, high: null, xhigh: "xhigh", max: "max" },
 		compat: { forceAdaptiveThinking: true, supportsStrictTools: true },
 	},
 	{
-		id: "claude-sonnet-4-6", name: "Claude Sonnet 4.6", route: "anthropic-direct", vendor: "Anthropic",
+		id: "claude-sonnet-4-6", paused: true, name: "Claude Sonnet 4.6", route: "anthropic-direct", vendor: "Anthropic",
 		input: 0.45, output: 2.25, cacheRead: 0.045, cacheWrite: 0.5625, contextWindow: 1_000_000, maxTokens: 128_000,
 		inputModalities: ["text"],
 		thinkingLevelMap: { off: null, minimal: null, low: null, medium: null, high: null, xhigh: null, max: "max" },
 		compat: { forceAdaptiveThinking: true, supportsStrictTools: true },
 	},
 	{
-		id: "claude-sonnet-4-5", name: "Claude Sonnet 4.5", route: "anthropic-direct", vendor: "Anthropic",
+		id: "claude-sonnet-4-5", paused: true, name: "Claude Sonnet 4.5", route: "anthropic-direct", vendor: "Anthropic",
 		input: 0.45, output: 2.25, cacheRead: 0.045, cacheWrite: 0.5625, contextWindow: 200_000, maxTokens: 64_000,
 		inputModalities: ["text"],
 		compat: { supportsStrictTools: true },
 	},
 	{
-		id: "claude-haiku-4-5", name: "Claude Haiku 4.5", route: "anthropic-direct", vendor: "Anthropic",
+		id: "claude-haiku-4-5", paused: true, name: "Claude Haiku 4.5", route: "anthropic-direct", vendor: "Anthropic",
 		input: 0.2, output: 1.0, cacheRead: 0.02, cacheWrite: 0.25, contextWindow: 200_000, maxTokens: 64_000,
 		inputModalities: ["text"],
 		compat: { supportsStrictTools: true },
@@ -324,7 +326,7 @@ export const CLAUDE_MODELS: WokeyAnthropicSpec[] = [
 		compat: { supportsMidConvoEffort: true, supportsMidConvoSystemMessages: true, supportsMidConvoToolChanges: true, forceAdaptiveThinking: true, supportsStrictTools: true },
 	},
 	{
-		id: "claude-fable-5", name: "Claude Fable 5", route: "anthropic-direct", vendor: "Anthropic",
+		id: "claude-fable-5", paused: true, name: "Claude Fable 5", route: "anthropic-direct", vendor: "Anthropic",
 		input: 2.39, output: 11.95, cacheRead: 0.239, cacheWrite: 2.9875, contextWindow: 1_000_000, maxTokens: 128_000,
 		inputModalities: ["text"],
 		thinkingLevelMap: { off: null, minimal: null, low: null, medium: null, high: null, xhigh: "xhigh", max: "max" },

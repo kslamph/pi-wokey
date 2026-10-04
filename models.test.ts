@@ -330,13 +330,11 @@ describe("active lineup", () => {
 });
 
 describe("full Claude lineup", () => {
-	const ids = [
-		"claude-opus-5-5", "claude-opus-5", "claude-opus-4-8", "claude-opus-4-7", "claude-opus-4-6",
-		"claude-sonnet-5-5", "claude-sonnet-5", "claude-sonnet-4-6", "claude-sonnet-4-5",
-		"claude-haiku-4-5", "claude-fable-5-1", "claude-fable-5",
-	];
+	// Price-advantaged rows only: dominated siblings (Opus 5/4.x, Sonnet 5/4.x,
+	// Haiku 4.5, Fable 5) stay in CLAUDE_MODELS as paused reference data.
+	const ids = ["claude-opus-5-5", "claude-sonnet-5-5", "claude-fable-5-1"];
 
-	it("lists all twelve Claude rows for the selector on the verified Messages route", () => {
+	it("lists the three kept Claude rows for the selector on the verified Messages route", () => {
 		const specs = allSpecs().filter((s) => s.vendor === "Anthropic");
 		expect(specs.map((s) => s.id)).toEqual(ids);
 		for (const s of specs) expect(s.route).toBe("anthropic-direct");
@@ -344,35 +342,25 @@ describe("full Claude lineup", () => {
 
 	it("borrows pi-native thinking maps and compat per row", () => {
 		const byId = Object.fromEntries(allSpecs().map((s) => [s.id, s]));
-		// Spot-check the distinctive maps: opus-4-6 is max-only, sonnet-5-5
-		// mirrors sonnet-5 (no pi entry exists — see the spec comment).
-		expect(toModel(byId["claude-opus-4-6"]!).thinkingLevelMap).toEqual({
-			off: null, minimal: null, low: null, medium: null, high: null, xhigh: null, max: "max",
+		// Sonnet 5.5 has no pi entry anywhere: mirrors Sonnet 5 (see the spec
+		// comment), so pin the borrowed shape explicitly.
+		expect(toModel(byId["claude-sonnet-5-5"]!).thinkingLevelMap).toEqual({
+			off: null, minimal: null, low: null, medium: null, high: null, xhigh: "xhigh", max: "max",
 		});
-		expect(toModel(byId["claude-sonnet-5-5"]!).thinkingLevelMap).toEqual(
-			toModel(byId["claude-sonnet-5"]!).thinkingLevelMap,
-		);
-		expect(toModel(byId["claude-opus-5"]!).compat).toMatchObject({
+		expect(toModel(byId["claude-opus-5-5"]!).compat).toMatchObject({
 			forceAdaptiveThinking: true, supportsTemperature: false, supportsStrictTools: true,
 		});
-		// Haiku and Sonnet 4.5 carry no map in pi either — borrowed as-is.
-		expect("thinkingLevelMap" in toModel(byId["claude-haiku-4-5"]!)).toBe(false);
-		expect("thinkingLevelMap" in toModel(byId["claude-sonnet-4-5"]!)).toBe(false);
 	});
 
 	it("uses Wokey's own windows and text-vs-image per row, not pi's", () => {
 		const byId = Object.fromEntries(allSpecs().map((s) => [s.id, toModel(s)]));
-		// Wokey serves these text-only with a 200k window; pi claims 1M + image.
-		expect(byId["claude-sonnet-4-5"]!).toMatchObject({ input: ["text"], contextWindow: 200_000, maxTokens: 64_000 });
-		expect(byId["claude-haiku-4-5"]!).toMatchObject({ input: ["text"], contextWindow: 200_000, maxTokens: 64_000 });
-		// …while Opus 5 and Sonnet 5.5 keep image input on both sides.
-		expect(byId["claude-opus-5"]!.input).toEqual(["text", "image"]);
+		expect(byId["claude-opus-5-5"]!.input).toEqual(["text", "image"]);
 		expect(byId["claude-sonnet-5-5"]!.input).toEqual(["text", "image"]);
+		expect(byId["claude-fable-5-1"]!.input).toEqual(["text", "image"]);
 	});
 
 	it("carries Wokey's rates with the 5m cache-write convention", () => {
 		const byId = Object.fromEntries(allSpecs().map((s) => [s.id, toModel(s)]));
-		expect(byId["claude-sonnet-5"]!.cost).toMatchObject({ input: 0.3, output: 1.5, cacheRead: 0.03, cacheWrite: 0.375 });
 		expect(byId["claude-fable-5-1"]!.cost).toMatchObject({ input: 2.39, output: 11.95, cacheRead: 0.05975, cacheWrite: 2.9875 });
 	});
 });

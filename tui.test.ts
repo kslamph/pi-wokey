@@ -177,7 +177,6 @@ describe("/wokey in-TUI panels", () => {
 		const panel = make(tui, theme, {}, done);
 		// deps() pre-checks gpt-6-luna only: move to it, uncheck it, move to astra, check it.
 		panel.handleInput("\x1b[B");
-		panel.handleInput("\x1b[B");
 		panel.handleInput(" ");
 		panel.handleInput("\x1b[B");
 		panel.handleInput(" ");

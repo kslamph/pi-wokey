@@ -89,7 +89,7 @@ legacy key is still sitting in that file.
 
 | | |
 |---|---|
-| **21 models, three native routes** | GPT + Claude on their verified routes (below), plus Zhipu, MiniMax and DeepSeek through pi's OpenAI Chat Completions adapter — opt-in via `/wokey` → **Models**, each with wokey's live context limits and pi-borrowed thinking levels. |
+| **12 models, three native routes** | GPT + Claude on their verified routes (below), plus Zhipu, MiniMax and DeepSeek through pi's OpenAI Chat Completions adapter — opt-in via `/wokey` → **Models**, each with wokey's live context limits and pi-borrowed thinking levels. |
 | **Verified every response** | Each reply carries a signed proof from the enclave that produced it. This extension checks it and labels the exchange. |
 | **Warn-only, never blocking** | A failed or missing proof is reported, but your reply is always delivered. A relay outage degrades into a notice, not a dead session. |
 | **Silent by default** | No popups, no prompts, no flags to set. `/wokey status` is there when you want the detail. |
@@ -146,17 +146,8 @@ lineup (GPT + Claude) is on by default — the other vendors are opt-in.
 | `gpt-6-luna` | OpenAI | off, low, medium, high, xhigh, max | ✅ |
 | `gpt-6-astra` | OpenAI | low, medium, high, xhigh, max | ✅ |
 | `claude-opus-5-5` | Anthropic | low, medium, high, xhigh, max | ✅ |
-| `claude-opus-5` | Anthropic | high, xhigh, max | ✅ |
-| `claude-opus-4-8` | Anthropic | high, xhigh, max | ✅ |
-| `claude-opus-4-7` | Anthropic | high, xhigh, max | ✅ |
-| `claude-opus-4-6` | Anthropic | max | ✅ |
 | `claude-sonnet-5-5` | Anthropic | high, xhigh, max | ✅ |
-| `claude-sonnet-5` | Anthropic | high, xhigh, max | ✅ |
-| `claude-sonnet-4-6` | Anthropic | max | ✅ |
-| `claude-sonnet-4-5` | Anthropic | pi default | ✅ |
-| `claude-haiku-4-5` | Anthropic | pi default | ✅ |
 | `claude-fable-5-1` | Anthropic | high, xhigh, max | ✅ |
-| `claude-fable-5` | Anthropic | high, xhigh, max | ✅ |
 | `glm-5.3` | Zhipu | low, high, max | ⚠️ unproven by design |
 | `glm-5.3-flash` | Zhipu | low, high, max | ⚠️ unproven by design |
 | `MiniMax-M3` | MiniMax | pi default | ⚠️ unproven by design |
