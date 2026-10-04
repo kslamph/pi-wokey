@@ -15,10 +15,12 @@
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { PROVIDER_ID, resolveConfig, type WokeyConfig } from "./config.ts";
+import { PROVIDER_ID, loadSettings, resolveConfig, saveSettings, type WokeyConfig } from "./config.ts";
 import { fetchBalance, WOKEY_API_ROOT, type BalanceInfo } from "./balance.ts";
 import { createWokeyProvider, getLastCatalogWarnings, PROVIDER_NAME } from "./provider.ts";
+import { allSpecs, enabledModelIds } from "./models.ts";
 import type { ProofReport } from "./verify/probe.ts";
+import { getRoute } from "./routes.ts";
 import { MARK, runMenu } from "./tui.ts";
 
 interface Stats {
@@ -62,6 +64,11 @@ export default function wokeyProvider(pi: ExtensionAPI, config: WokeyConfig = re
 		// Silent on success. "verified-with-gaps" is the documented request-binding gap
 		// (see README) — repeating it every turn trains you to ignore warnings, so it is
 		// shown in /wokey instead. Warn only on a real problem: failed check or no proof.
+		// Verification covers the Claude + GPT routes only: Wokey ships no proofs
+		// for Chat Completions vendors (Zhipu, MiniMax, DeepSeek), so their
+		// exchanges are unverified by design — recorded and shown in /wokey
+		// status, but never warned on. See the README §Reading the verdict note.
+		if (getRoute(report.routeId).verification === "none") return;
 		if (config.notifyOnFailure && report.status !== "verified" && report.status !== "verified-with-gaps") {
 			// "unproven" means the relay sent no proof at all: one notice is enough to
 			// know, and a per-turn repeat is noise. Dedup before warning — checking
@@ -122,6 +129,15 @@ export default function wokeyProvider(pi: ExtensionAPI, config: WokeyConfig = re
 					// from a second key store kept by this extension.
 					syncBalance: async () => {
 						await syncBalance(await ctx.modelRegistry.getApiKeyForProvider(PROVIDER_ID));
+					},
+					allModels: () => allSpecs(),
+					enabledModels: () => enabledModelIds(),
+					// Persist the checked set, then re-register: only the chosen
+					// models are offered from here on. A disable cannot strand the
+					// session — pi keeps serving the current model until switched.
+					saveModels: async (ids: string[]) => {
+						saveSettings({ ...loadSettings(), enabledModels: ids });
+						await ctx.modelRegistry.refresh({ providers: [PROVIDER_ID] }).catch(() => {});
 					},
 				},
 				String(args ?? "").split(/\s+/).map(String),

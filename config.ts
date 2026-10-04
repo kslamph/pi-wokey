@@ -1,6 +1,6 @@
-import { readFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 
 /**
  * Configuration + trust anchors for the wokey.ai provider.
@@ -75,6 +75,11 @@ export interface WokeySettings {
 	expectedPcr0?: string;
 	verify?: boolean;
 	notifyOnFailure?: boolean;
+	/**
+	 * Model ids registered with pi, chosen in the `/wokey models` selector.
+	 * Absent means the verified default lineup. Unknown ids are ignored.
+	 */
+	enabledModels?: string[];
 }
 
 export function loadSettings(): WokeySettings {
@@ -91,10 +96,23 @@ export function loadSettings(): WokeySettings {
 		if (typeof raw.expectedPcr0 === "string") out.expectedPcr0 = raw.expectedPcr0;
 		if (typeof raw.verify === "boolean") out.verify = raw.verify;
 		if (typeof raw.notifyOnFailure === "boolean") out.notifyOnFailure = raw.notifyOnFailure;
+		if (Array.isArray(raw.enabledModels) && raw.enabledModels.every((id) => typeof id === "string")) {
+			out.enabledModels = [...raw.enabledModels];
+		}
 		return out;
 	} catch {
 		return {}; // missing or malformed is not fatal; defaults still work
 	}
+}
+
+/**
+ * Persist verification preferences (including the selector's model choice).
+ * Preferences only — credentials never live here (`/login wokey` owns those).
+ */
+export function saveSettings(settings: WokeySettings): void {
+	const path = settingsPath();
+	mkdirSync(dirname(path), { recursive: true });
+	writeFileSync(path, `${JSON.stringify(settings, null, 2)}\n`);
 }
 
 /**

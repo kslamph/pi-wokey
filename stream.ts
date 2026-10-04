@@ -93,6 +93,7 @@ function buildRoutedOptions<T extends StreamOptions>(
 		...(config.verify
 			? {
 					fetch: createProbingFetch({
+						routeId: route.id,
 						policy: { expectedPcr0: config.expectedPcr0, endpoint: route.endpoint, requestBinding: route.requestBinding },
 						onReport,
 						expectedModel: model.id,

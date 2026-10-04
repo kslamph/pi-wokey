@@ -16,8 +16,8 @@
  * and unknown ids are never activated.
  */
 
-import type { AnthropicMessagesCompat, Model, ModelInputLimits, ModelPromptCache, ThinkingLevelMap } from "@earendil-works/pi-ai";
-import { PROVIDER_ID } from "./config.ts";
+import type { AnthropicMessagesCompat, Model, ModelInputLimits, ModelPromptCache, OpenAICompletionsCompat, ThinkingLevelMap } from "@earendil-works/pi-ai";
+import { PROVIDER_ID, loadSettings } from "./config.ts";
 import { getRoute, type WokeyApi, type WokeyRouteId } from "./routes.ts";
 
 interface WokeyModelBase {
@@ -25,6 +25,8 @@ interface WokeyModelBase {
 	name: string;
 	/** Which route profile serves this model: its API, base URL, and policy. */
 	route: WokeyRouteId;
+	/** Vendor label for grouping in the `/wokey models` selector (OpenAI, Anthropic, Zhipu, …). */
+	vendor: string;
 	/** USD per 1M tokens. */
 	input: number;
 	output: number;
@@ -85,7 +87,24 @@ export interface WokeyAnthropicSpec extends WokeyModelBase {
 	inputLimits?: ModelInputLimits;
 }
 
-export type WokeyModelSpec = WokeyGptSpec | WokeyAnthropicSpec;
+export interface WokeyCompletionsSpec extends WokeyModelBase {
+	route: "openai-chat";
+	/** Input modalities callable through Wokey (the catalog is authoritative here). */
+	inputModalities?: ("text" | "image")[];
+	/**
+	 * pi thinking-level map, borrowed from pi's own built-in provider for the
+	 * same model family (zai / opencode-go / opencode entries) — assumed correct
+	 * unless live use proves otherwise. Absent means pi's default (all levels).
+	 */
+	thinkingLevelMap?: ThinkingLevelMap;
+	/** OpenAI-completions compat, borrowed the same way (thinkingFormat included). */
+	compat: OpenAICompletionsCompat;
+	/** Prompt cache lifetimes in seconds. */
+	promptCache?: ModelPromptCache;
+	inputLimits?: ModelInputLimits;
+}
+
+export type WokeyModelSpec = WokeyGptSpec | WokeyAnthropicSpec | WokeyCompletionsSpec;
 
 /*
  * NOTE on the retired rows below (gpt-6-sol, gpt-5.6-*, gpt-5.5): their
@@ -107,15 +126,22 @@ export type WokeyModelSpec = WokeyGptSpec | WokeyAnthropicSpec;
  */
 const ACTIVE_MODEL_IDS = ["gpt-6.1-sol", "gpt-6-luna", "gpt-6-astra", "claude-opus-5-5"] as const;
 
+/**
+ * Default registration: the verified lineup only. The Chat Completions vendors
+ * (Zhipu, MiniMax, DeepSeek) are opt-in through the `/wokey models` selector —
+ * their responses are unverified by design, so they stay off until chosen.
+ */
+const DEFAULT_ENABLED_IDS = new Set<string>(ACTIVE_MODEL_IDS);
+
 export const GPT_MODELS: WokeyGptSpec[] = [
-	{ id: "gpt-6.1-sol", name: "GPT-6.1 Sol", route: "openai-codex", input: 0.18, output: 0.9, cacheRead: 0.009, cacheWrite: 0.225, officialInput: 2, officialOutput: 10, contextWindow: 1_050_000, maxTokens: 128_000, reasoningEfforts: ["low", "medium", "high", "xhigh", "max"] as const, gatewayAcceptedEfforts: ["none", "minimal", "low", "medium", "high", "xhigh", "max"] as const },
-	{ id: "gpt-6-sol", name: "GPT-6 Sol", route: "openai-codex", input: 0.18, output: 0.9, cacheRead: 0.018, cacheWrite: 0.225, officialInput: 2, officialOutput: 10, contextWindow: 1_050_000, maxTokens: 128_000, reasoningEfforts: ["none", "low", "medium", "high", "xhigh", "max"] as const },
-	{ id: "gpt-6-luna", name: "GPT-6 Luna", route: "openai-codex", input: 0.09, output: 0.45, cacheRead: 0.009, cacheWrite: 0.1125, officialInput: 0.1, officialOutput: 0.5, contextWindow: 1_050_000, maxTokens: 128_000, reasoningEfforts: ["none", "low", "medium", "high", "xhigh", "max"] as const, gatewayAcceptedEfforts: ["none", "low", "medium", "high", "xhigh", "max"] as const },
-	{ id: "gpt-6-astra", name: "GPT-6 Astra", route: "openai-codex", input: 0.9, output: 4.5, cacheRead: 0.09, cacheWrite: 1.125, officialInput: 10, officialOutput: 50, contextWindow: 1_050_000, maxTokens: 128_000, reasoningEfforts: ["low", "medium", "high", "xhigh", "max"] as const, gatewayAcceptedEfforts: ["none", "minimal", "low", "medium", "high", "xhigh", "max"] as const },
-	{ id: "gpt-5.6-sol", name: "GPT-5.6 Sol", route: "openai-codex", input: 0.44, output: 2.2, cacheRead: 0.044, cacheWrite: 0.55, officialInput: 4, officialOutput: 20, contextWindow: 1_050_000, maxTokens: 128_000, reasoningEfforts: ["none", "minimal", "low", "medium", "high", "xhigh", "max"] as const },
-	{ id: "gpt-5.6-terra", name: "GPT-5.6 Terra", route: "openai-codex", input: 0.2, output: 1.2, cacheRead: 0.02, cacheWrite: 0.25, officialInput: 2, officialOutput: 12, contextWindow: 1_050_000, maxTokens: 128_000, reasoningEfforts: ["none", "low", "medium", "high", "xhigh", "max"] as const },
-	{ id: "gpt-5.6-luna", name: "GPT-5.6 Luna", route: "openai-codex", input: 0.12, output: 0.72, cacheRead: 0.012, cacheWrite: 0.15, officialInput: 0.2, officialOutput: 1.2, contextWindow: 1_050_000, maxTokens: 128_000, reasoningEfforts: ["none", "minimal", "low", "medium", "high", "xhigh", "max"] as const },
-	{ id: "gpt-5.5", name: "GPT-5.5", route: "openai-codex", input: 0.5, output: 3, cacheRead: 0.05, cacheWrite: 0, officialInput: 5, officialOutput: 30, contextWindow: 1_050_000, maxTokens: 128_000, reasoningEfforts: ["none", "low", "medium", "high", "xhigh"] as const },
+	{ id: "gpt-6.1-sol", name: "GPT-6.1 Sol", route: "openai-codex", vendor: "OpenAI", input: 0.18, output: 0.9, cacheRead: 0.009, cacheWrite: 0.225, officialInput: 2, officialOutput: 10, contextWindow: 1_050_000, maxTokens: 128_000, reasoningEfforts: ["low", "medium", "high", "xhigh", "max"] as const, gatewayAcceptedEfforts: ["none", "minimal", "low", "medium", "high", "xhigh", "max"] as const },
+	{ id: "gpt-6-sol", name: "GPT-6 Sol", route: "openai-codex", vendor: "OpenAI", input: 0.18, output: 0.9, cacheRead: 0.018, cacheWrite: 0.225, officialInput: 2, officialOutput: 10, contextWindow: 1_050_000, maxTokens: 128_000, reasoningEfforts: ["none", "low", "medium", "high", "xhigh", "max"] as const },
+	{ id: "gpt-6-luna", name: "GPT-6 Luna", route: "openai-codex", vendor: "OpenAI", input: 0.09, output: 0.45, cacheRead: 0.009, cacheWrite: 0.1125, officialInput: 0.1, officialOutput: 0.5, contextWindow: 1_050_000, maxTokens: 128_000, reasoningEfforts: ["none", "low", "medium", "high", "xhigh", "max"] as const, gatewayAcceptedEfforts: ["none", "low", "medium", "high", "xhigh", "max"] as const },
+	{ id: "gpt-6-astra", name: "GPT-6 Astra", route: "openai-codex", vendor: "OpenAI", input: 0.9, output: 4.5, cacheRead: 0.09, cacheWrite: 1.125, officialInput: 10, officialOutput: 50, contextWindow: 1_050_000, maxTokens: 128_000, reasoningEfforts: ["low", "medium", "high", "xhigh", "max"] as const, gatewayAcceptedEfforts: ["none", "minimal", "low", "medium", "high", "xhigh", "max"] as const },
+	{ id: "gpt-5.6-sol", name: "GPT-5.6 Sol", route: "openai-codex", vendor: "OpenAI", input: 0.44, output: 2.2, cacheRead: 0.044, cacheWrite: 0.55, officialInput: 4, officialOutput: 20, contextWindow: 1_050_000, maxTokens: 128_000, reasoningEfforts: ["none", "minimal", "low", "medium", "high", "xhigh", "max"] as const },
+	{ id: "gpt-5.6-terra", name: "GPT-5.6 Terra", route: "openai-codex", vendor: "OpenAI", input: 0.2, output: 1.2, cacheRead: 0.02, cacheWrite: 0.25, officialInput: 2, officialOutput: 12, contextWindow: 1_050_000, maxTokens: 128_000, reasoningEfforts: ["none", "low", "medium", "high", "xhigh", "max"] as const },
+	{ id: "gpt-5.6-luna", name: "GPT-5.6 Luna", route: "openai-codex", vendor: "OpenAI", input: 0.12, output: 0.72, cacheRead: 0.012, cacheWrite: 0.15, officialInput: 0.2, officialOutput: 1.2, contextWindow: 1_050_000, maxTokens: 128_000, reasoningEfforts: ["none", "minimal", "low", "medium", "high", "xhigh", "max"] as const },
+	{ id: "gpt-5.5", name: "GPT-5.5", route: "openai-codex", vendor: "OpenAI", input: 0.5, output: 3, cacheRead: 0.05, cacheWrite: 0, officialInput: 5, officialOutput: 30, contextWindow: 1_050_000, maxTokens: 128_000, reasoningEfforts: ["none", "low", "medium", "high", "xhigh"] as const },
 ];
 
 /**
@@ -128,6 +154,7 @@ const CLAUDE_OPUS_5_5: WokeyAnthropicSpec = {
 	id: "claude-opus-5-5",
 	name: "Claude Opus 5.5",
 	route: "anthropic-direct",
+	vendor: "Anthropic",
 	input: 0.6,
 	output: 3.0,
 	cacheRead: 0.03,
@@ -147,8 +174,61 @@ const CLAUDE_OPUS_5_5: WokeyAnthropicSpec = {
 	inputLimits: { images: { resize: { maxWidth: 2000, maxHeight: 2000, maxBytes: 4718592, jpegQuality: 80 } } },
 };
 
+/**
+ * Chat Completions vendors: Zhipu, MiniMax, DeepSeek.
+ *
+ * All three speak OpenAI Chat Completions through Wokey (GLM also speaks
+ * Messages, but one shared route keeps this to a single adapter until live use
+ * proves Messages drives GLM better — switching is a one-field `route` change).
+ * Thinking maps and compat are borrowed from pi's own built-in providers for
+ * the same families (zai / opencode-go / opencode) and assumed correct unless
+ * live use proves otherwise; rates, context and max output are wokey's own,
+ * reconciled against the live catalog like every other row.
+ *
+ * None of these verifies: Wokey documents proofs for Claude Messages and GPT
+ * Responses on official routes only, so every exchange here reports `unproven`
+ * and never warns (see routes.ts `verification: "none"`).
+ */
+export const COMPLETIONS_MODELS: WokeyCompletionsSpec[] = [
+	{
+		id: "glm-5.3", name: "GLM-5.3", route: "openai-chat", vendor: "Zhipu",
+		input: 0.28, output: 0.88, cacheRead: 0.052, cacheWrite: 0, contextWindow: 1_000_000, maxTokens: 131_072,
+		inputModalities: ["text"],
+		thinkingLevelMap: { off: null, minimal: null, low: "low", medium: null, high: "high", xhigh: null, max: "max" },
+		compat: { supportsStore: false, supportsDeveloperRole: false, supportsReasoningEffort: true, maxTokensField: "max_tokens", thinkingFormat: "zai", supportsStrictMode: true, zaiToolStream: true },
+	},
+	{
+		id: "glm-5.3-flash", name: "GLM-5.3-Flash", route: "openai-chat", vendor: "Zhipu",
+		input: 0.075, output: 0.25, cacheRead: 0.015, cacheWrite: 0, contextWindow: 1_000_000, maxTokens: 131_072,
+		inputModalities: ["text", "image"],
+		thinkingLevelMap: { off: null, minimal: null, low: "low", medium: null, high: "high", xhigh: null, max: "max" },
+		compat: { supportsStore: false, supportsDeveloperRole: false, supportsReasoningEffort: true, maxTokensField: "max_tokens", thinkingFormat: "zai", supportsStrictMode: true, zaiToolStream: true },
+		inputLimits: { images: { resize: { maxWidth: 2000, maxHeight: 2000, maxBytes: 4718592, jpegQuality: 80 } } },
+	},
+	{
+		id: "MiniMax-M3", name: "MiniMax M3", route: "openai-chat", vendor: "MiniMax",
+		input: 0.09, output: 0.36, cacheRead: 0.018, cacheWrite: 0, contextWindow: 1_000_000, maxTokens: 80_000,
+		inputModalities: ["text"],
+		compat: { supportsStore: false, supportsDeveloperRole: false, supportsStrictMode: true, maxTokensField: "max_tokens" },
+	},
+	{
+		id: "deepseek-v4-flash", name: "DeepSeek V4 Flash", route: "openai-chat", vendor: "DeepSeek",
+		input: 0.112, output: 0.448, cacheRead: 0.00224, cacheWrite: 0, contextWindow: 1_000_000, maxTokens: 384_000,
+		inputModalities: ["text"],
+		thinkingLevelMap: { off: null, minimal: null, low: "low", medium: null, high: "high", xhigh: null, max: "max" },
+		compat: { supportsStore: false, supportsDeveloperRole: false, supportsStrictMode: true, maxTokensField: "max_tokens", requiresReasoningContentOnAssistantMessages: true, thinkingFormat: "deepseek" },
+	},
+	{
+		id: "deepseek-v4-pro", name: "DeepSeek V4 Pro", route: "openai-chat", vendor: "DeepSeek",
+		input: 0.528, output: 1.584, cacheRead: 0.0176, cacheWrite: 0, contextWindow: 1_000_000, maxTokens: 384_000,
+		inputModalities: ["text"],
+		thinkingLevelMap: { off: null, minimal: null, low: null, medium: null, high: "high", xhigh: null, max: "max" },
+		compat: { supportsStore: false, supportsDeveloperRole: false, supportsStrictMode: true, maxTokensField: "max_tokens", requiresReasoningContentOnAssistantMessages: true, thinkingFormat: "deepseek" },
+	},
+];
+
 /** The provider-wide catalog: every known row, regardless of route. */
-export const WOKEY_MODELS: WokeyModelSpec[] = [...GPT_MODELS, CLAUDE_OPUS_5_5];
+export const WOKEY_MODELS: WokeyModelSpec[] = [...GPT_MODELS, CLAUDE_OPUS_5_5, ...COMPLETIONS_MODELS];
 
 const PER_MILLION = 1_000_000;
 
@@ -192,6 +272,7 @@ export function thinkingLevelMapFor(supported: readonly string[]): ThinkingLevel
 
 export function toModel(spec: WokeyGptSpec): Model<"openai-responses">;
 export function toModel(spec: WokeyAnthropicSpec): Model<"anthropic-messages">;
+export function toModel(spec: WokeyCompletionsSpec): Model<"openai-completions">;
 export function toModel(spec: WokeyModelSpec): Model<WokeyApi>;
 export function toModel(spec: WokeyModelSpec): Model<WokeyApi> {
 	// API and base URL come from the route profile, never from global config or
@@ -232,6 +313,20 @@ export function toModel(spec: WokeyModelSpec): Model<WokeyApi> {
 			...(spec.inputLimits ? { inputLimits: { ...spec.inputLimits, images: spec.inputLimits.images ? { ...spec.inputLimits.images } : undefined } } : {}),
 		};
 	}
+	if (route.api === "openai-completions") {
+		if (spec.route !== "openai-chat") throw new Error(`wokey: spec "${spec.id}" routes to "${spec.route}" but the profile serves "${route.api}"`);
+		return {
+			...shared,
+			api: route.api,
+			input: spec.inputModalities ?? ["text", "image"],
+			// Absent map means pi's default (all levels) — that is what pi's own
+			// entry for this family carries, so it is borrowed as-is.
+			...(spec.thinkingLevelMap ? { thinkingLevelMap: { ...spec.thinkingLevelMap } } : {}),
+			compat: { ...spec.compat },
+			...(spec.promptCache ? { promptCache: { ...spec.promptCache } } : {}),
+			...(spec.inputLimits ? { inputLimits: { ...spec.inputLimits, images: spec.inputLimits.images ? { ...spec.inputLimits.images } : undefined } } : {}),
+		};
+	}
 	if (spec.route !== "openai-codex") throw new Error(`wokey: spec "${spec.id}" routes to "${spec.route}" but the profile serves "${route.api}"`);
 	return {
 		...shared,
@@ -242,12 +337,33 @@ export function toModel(spec: WokeyModelSpec): Model<WokeyApi> {
 
 const ACTIVE = new Set<string>(ACTIVE_MODEL_IDS);
 
+/**
+ * Ids the selector registered. `undefined` in settings means "never chosen",
+ * which falls back to the verified default — the unverified vendors stay off
+ * until explicitly picked. Unknown ids are dropped, so a stale file cannot
+ * resurrect a retired model.
+ */
+export function enabledModelIds(): Set<string> {
+	const known = new Set(WOKEY_MODELS.filter((m) => !m.paused).map((m) => m.id));
+	const saved = loadSettings().enabledModels;
+	if (!saved) return new Set(DEFAULT_ENABLED_IDS);
+	const picked = saved.filter((id) => known.has(id));
+	return new Set(picked.length > 0 ? picked : DEFAULT_ENABLED_IDS);
+}
+
 export function activeModels(): Model<WokeyApi>[] {
-	return WOKEY_MODELS.filter((m) => !m.paused && ACTIVE.has(m.id)).map((m) => toModel(m));
+	const enabled = enabledModelIds();
+	return WOKEY_MODELS.filter((m) => !m.paused && enabled.has(m.id)).map((m) => toModel(m));
 }
 
 export function activeSpecs(): WokeyModelSpec[] {
-	return WOKEY_MODELS.filter((m) => !m.paused && ACTIVE.has(m.id));
+	const enabled = enabledModelIds();
+	return WOKEY_MODELS.filter((m) => !m.paused && enabled.has(m.id));
+}
+
+/** Every known row for the selector, verified lineup first. */
+export function allSpecs(): WokeyModelSpec[] {
+	return WOKEY_MODELS.filter((m) => !m.paused);
 }
 
 // ── live catalog ───────────────────────────────────────────────────────────────

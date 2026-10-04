@@ -16,9 +16,9 @@
 
 import { Buffer } from "node:buffer";
 
-export type WokeyRouteId = "openai-codex" | "anthropic-direct";
+export type WokeyRouteId = "openai-codex" | "anthropic-direct" | "openai-chat";
 
-export type WokeyApi = "openai-responses" | "anthropic-messages";
+export type WokeyApi = "openai-responses" | "anthropic-messages" | "openai-completions";
 
 export interface WokeyEndpoint {
 	host: string;
@@ -31,8 +31,24 @@ export interface WokeyRoute {
 	api: WokeyApi;
 	/** Relay base URL for this route's protocol. */
 	baseUrl: string;
-	/** Exact signed upstream tuple. Host, path and method match as one unit. */
-	endpoint: WokeyEndpoint;
+	/**
+	 * Exact signed upstream tuple. Host, path and method match as one unit.
+	 *
+	 * `null` means there is nothing measured to pin: Wokey ships no proofs for
+	 * this route's form, so verification is not applicable and no anchor is
+	 * fabricated here. A null endpoint always verifies as `unproven`, never green.
+	 */
+	endpoint: WokeyEndpoint | null;
+	/**
+	 * Whether this route's responses can carry a verifiable proof.
+	 *
+	 * "official": Wokey returns a `tee.proof` on this form against an official
+	 * upstream, verified against `endpoint` above. "none": Wokey documents that
+	 * proofs cover only Claude Messages and GPT Responses on official routes,
+	 * so responses here are unverified by design — recorded as `unproven` and
+	 * never warned on (see README §Reading the verdict).
+	 */
+	verification: "official" | "none";
 	/**
 	 * Whether byte-exact request binding is achievable through this relay.
 	 *
@@ -88,6 +104,23 @@ function extractResponsesServedModel(body: Buffer): string | undefined {
 	return undefined;
 }
 
+/** Pull the served model out of a Chat Completions SSE stream (`data: {"model": …}`). */
+function extractChatServedModel(body: Buffer): string | undefined {
+	for (const line of body.toString("utf8").split("\n")) {
+		const trimmed = line.trim();
+		if (!trimmed.startsWith("data:")) continue;
+		const data = trimmed.slice(5).trim();
+		if (!data || data === "[DONE]") continue;
+		try {
+			const model = JSON.parse(data)?.model;
+			if (typeof model === "string" && model) return model;
+		} catch {
+			/* keep scanning */
+		}
+	}
+	return undefined;
+}
+
 /** Pull the served model out of an Anthropic SSE stream (`message_start.message.model`). */
 function extractAnthropicServedModel(body: Buffer): string | undefined {
 	const lines = body.toString("utf8").split("\n");
@@ -133,7 +166,7 @@ function codexHeaders(headers: Record<string, string | null>, cacheKey: string):
 }
 
 function freezeRoute(route: WokeyRoute): WokeyRoute {
-	return Object.freeze({ ...route, endpoint: Object.freeze({ ...route.endpoint }) });
+	return Object.freeze({ ...route, endpoint: route.endpoint ? Object.freeze({ ...route.endpoint }) : null });
 }
 
 export const ROUTES: Readonly<Record<WokeyRouteId, WokeyRoute>> = Object.freeze({
@@ -142,6 +175,7 @@ export const ROUTES: Readonly<Record<WokeyRouteId, WokeyRoute>> = Object.freeze(
 		api: "openai-responses",
 		baseUrl: "https://api.wokey.ai/v1",
 		endpoint: { host: "chatgpt.com", path: "/backend-api/codex/responses", method: "POST" },
+		verification: "official",
 		requestBinding: "unavailable",
 		extractServedModel: extractResponsesServedModel,
 		transformPayload: applyCodexEnvelope,
@@ -152,11 +186,32 @@ export const ROUTES: Readonly<Record<WokeyRouteId, WokeyRoute>> = Object.freeze(
 		api: "anthropic-messages",
 		baseUrl: "https://api.wokey.ai",
 		endpoint: { host: "api.anthropic.com", path: "/v1/messages", method: "POST" },
+		verification: "official",
 		requestBinding: "unavailable",
 		extractServedModel: extractAnthropicServedModel,
 		// No plugin-added body transformation and no Codex headers: the Anthropic
 		// Messages payload goes through exactly as pi's adapter built it (after
 		// the caller's own onPayload hook) and carries no session-affinity headers.
+		transformPayload: (payload) =>
+			payload && typeof payload === "object" && !Array.isArray(payload)
+				? { ...(payload as Record<string, unknown>) }
+				: {},
+		transformHeaders: (headers) => ({ ...headers }),
+	}),
+	"openai-chat": freezeRoute({
+		id: "openai-chat",
+		api: "openai-completions",
+		baseUrl: "https://api.wokey.ai/v1",
+		// No measured upstream: Wokey documents proofs for Claude Messages and
+		// GPT Responses on official routes only, so Chat Completions carries no
+		// proof. Null here is honest — a fabricated anchor would be worse than none.
+		endpoint: null,
+		verification: "none",
+		requestBinding: "unavailable",
+		extractServedModel: extractChatServedModel,
+		// Same posture as the Anthropic route: pi's completions adapter built the
+		// payload (model, messages, tools, thinking params per the spec's compat),
+		// and this provider adds no envelope of its own on this route.
 		transformPayload: (payload) =>
 			payload && typeof payload === "object" && !Array.isArray(payload)
 				? { ...(payload as Record<string, unknown>) }

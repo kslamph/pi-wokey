@@ -13,12 +13,22 @@ import { DEFAULT_CONFIG, PUBLISHED_PCR0, resolveConfig } from "./config.ts";
 import { getRoute, ROUTES, type WokeyRouteId } from "./routes.ts";
 
 describe("route registry", () => {
-	it("exposes exactly the two measured routes", () => {
-		expect(Object.keys(ROUTES).sort()).toEqual(["anthropic-direct", "openai-codex"]);
+	it("exposes the two measured routes plus the unverified chat route", () => {
+		expect(Object.keys(ROUTES).sort()).toEqual(["anthropic-direct", "openai-chat", "openai-codex"]);
+	});
+
+	it("pins the chat route as unverifiable: no fabricated endpoint, never warns", () => {
+		const route = getRoute("openai-chat");
+		expect(route.api).toBe("openai-completions");
+		expect(route.baseUrl).toBe("https://api.wokey.ai/v1");
+		expect(route.endpoint).toBeNull();
+		expect(route.verification).toBe("none");
+		expect(getRoute("openai-codex").verification).toBe("official");
+		expect(getRoute("anthropic-direct").verification).toBe("official");
 	});
 
 	it("resolves each route by id", () => {
-		for (const id of ["openai-codex", "anthropic-direct"] as WokeyRouteId[]) {
+		for (const id of ["openai-codex", "anthropic-direct", "openai-chat"] as WokeyRouteId[]) {
 			expect(getRoute(id).id).toBe(id);
 		}
 	});
@@ -33,6 +43,7 @@ describe("route registry", () => {
 		expect(Object.isFrozen(getRoute("openai-codex").endpoint)).toBe(true);
 		expect(Object.isFrozen(getRoute("anthropic-direct"))).toBe(true);
 		expect(Object.isFrozen(getRoute("anthropic-direct").endpoint)).toBe(true);
+		expect(Object.isFrozen(getRoute("openai-chat"))).toBe(true);
 	});
 });
 

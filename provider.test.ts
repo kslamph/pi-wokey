@@ -8,12 +8,14 @@
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-const { openAIStreams, anthropicStreams } = vi.hoisted(() => ({
+const { openAIStreams, anthropicStreams, completionsStreams } = vi.hoisted(() => ({
 	openAIStreams: { stream: vi.fn((..._args: unknown[]) => ({}) as never), streamSimple: vi.fn((..._args: unknown[]) => ({}) as never) },
 	anthropicStreams: { stream: vi.fn((..._args: unknown[]) => ({}) as never), streamSimple: vi.fn((..._args: unknown[]) => ({}) as never) },
+	completionsStreams: { stream: vi.fn((..._args: unknown[]) => ({}) as never), streamSimple: vi.fn((..._args: unknown[]) => ({}) as never) },
 }));
 vi.mock("@earendil-works/pi-ai/api/openai-responses.lazy", () => ({ openAIResponsesApi: () => openAIStreams }));
 vi.mock("@earendil-works/pi-ai/api/anthropic-messages.lazy", () => ({ anthropicMessagesApi: () => anthropicStreams }));
+vi.mock("@earendil-works/pi-ai/api/openai-completions.lazy", () => ({ openAICompletionsApi: () => completionsStreams }));
 
 import type { RefreshModelsContext } from "@earendil-works/pi-ai";
 import { fetchBalance, WOKEY_API_ROOT } from "./balance.ts";
@@ -54,6 +56,8 @@ describe("native wokey provider identity", () => {
 		openAIStreams.streamSimple.mockClear();
 		anthropicStreams.stream.mockClear();
 		anthropicStreams.streamSimple.mockClear();
+		completionsStreams.stream.mockClear();
+		completionsStreams.streamSimple.mockClear();
 	});
 
 	it("registers one provider with id wokey", () => {
@@ -145,14 +149,39 @@ describe("native wokey provider identity", () => {
 
 	it("surfaces an unsupported model api as a provider stream error, never an OpenAI fallback", async () => {
 		const p = provider();
-		const other = { provider: "wokey", id: "gpt-5.5", api: "openai-completions" } as never;
+		const other = { provider: "wokey", id: "gpt-5.5", api: "openai-codex-responses" } as never;
 		const events: unknown[] = [];
 		for await (const event of p.stream(other, context, {})) events.push(event);
 		const error = events.find((e) => (e as { type?: string }).type === "error");
 		expect(error).toBeDefined();
-		expect(JSON.stringify(error)).toMatch(/no API implementation.*openai-completions/i);
+		expect(JSON.stringify(error)).toMatch(/no API implementation.*openai-codex-responses/i);
 		expect(openAIStreams.stream).not.toHaveBeenCalled();
 		expect(anthropicStreams.stream).not.toHaveBeenCalled();
+		expect(completionsStreams.stream).not.toHaveBeenCalled();
+	});
+
+	it("dispatches chat-completions models to the completions wrapper", async () => {
+		const { mkdtempSync, rmSync, writeFileSync } = await import("node:fs");
+		const { tmpdir } = await import("node:os");
+		const { join } = await import("node:path");
+		const dir = mkdtempSync(join(tmpdir(), "wokey-provider-chat-"));
+		const prev = process.env.WOKEY_CONFIG;
+		// Opt into the unverified vendors the way the selector does.
+		process.env.WOKEY_CONFIG = join(dir, "wokey.json");
+		writeFileSync(process.env.WOKEY_CONFIG, JSON.stringify({ enabledModels: ["glm-5.3-flash"] }));
+		try {
+			const p = provider();
+			const glm = p.getModels().find((m) => m.id === "glm-5.3-flash")!;
+			expect(glm).toMatchObject({ api: "openai-completions", baseUrl: "https://api.wokey.ai/v1" });
+			p.stream(glm, context, {});
+			expect(completionsStreams.stream).toHaveBeenCalledOnce();
+			expect(openAIStreams.stream).not.toHaveBeenCalled();
+			expect(anthropicStreams.stream).not.toHaveBeenCalled();
+		} finally {
+			if (prev === undefined) delete process.env.WOKEY_CONFIG;
+			else process.env.WOKEY_CONFIG = prev;
+			rmSync(dir, { recursive: true, force: true });
+		}
 	});
 });
 

@@ -20,6 +20,7 @@ import {
 } from "@earendil-works/pi-ai";
 import { anthropicMessagesApi } from "@earendil-works/pi-ai/api/anthropic-messages.lazy";
 import { openAIResponsesApi } from "@earendil-works/pi-ai/api/openai-responses.lazy";
+import { openAICompletionsApi } from "@earendil-works/pi-ai/api/openai-completions.lazy";
 import { PROVIDER_ID, type WokeyConfig } from "./config.ts";
 import { activeModels, refreshFromCatalog } from "./models.ts";
 import { getRoute, type WokeyApi } from "./routes.ts";
@@ -93,6 +94,11 @@ export function createWokeyProvider(options: WokeyProviderOptions): Provider<Wok
 		api: {
 			"openai-responses": createVerifiedStreams(getRoute("openai-codex"), config, onReport, openAIResponsesApi()),
 			"anthropic-messages": createVerifiedStreams(getRoute("anthropic-direct"), config, onReport, anthropicMessagesApi()),
+			// Same verified wrapper, identity policy: the route has no proof-bearing
+			// form, so every exchange reports `unproven` — recorded and shown, never
+			// warned on. Keeping the wrapper (instead of the raw adapter) preserves
+			// uniform accounting and lets verification light up if Wokey adds proofs.
+			"openai-completions": createVerifiedStreams(getRoute("openai-chat"), config, onReport, openAICompletionsApi()),
 		},
 	});
 }

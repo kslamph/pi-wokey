@@ -6,6 +6,7 @@
 
 import { describe, expect, it, vi } from "vitest";
 import { resolveConfig, type WokeyConfig } from "./config.ts";
+import { allSpecs } from "./models.ts";
 import { renderStatus, runMenu, type MenuDeps, type MenuStats } from "./tui.ts";
 import type { ProofReport } from "./verify/probe.ts";
 
@@ -26,6 +27,9 @@ function deps(over: Partial<MenuDeps> = {}): MenuDeps {
 		refresh: async () => {},
 		balance: () => BALANCE,
 		syncBalance: async () => {},
+		allModels: () => allSpecs(),
+		enabledModels: () => new Set(["gpt-6-luna"]),
+		saveModels: async () => {},
 		...over,
 	};
 }
@@ -110,9 +114,11 @@ describe("/wokey in-TUI panels", () => {
 		expect(panel.render(100).join("\n")).toContain("pinned");
 	});
 
-	it("keeps the panels without a fold key free of the 'm' hint", async () => {
-		expect((await renderPanel(["models"])).join("\n")).toContain("enter/esc close");
-		expect((await renderPanel(["models"])).join("\n")).not.toContain("m more");
+	it("keeps the models selector free of the fold hint and shows its own keys", async () => {
+		const text = (await renderPanel(["models"])).join("\n");
+		expect(text).toContain("enter save");
+		expect(text).toContain("space toggle");
+		expect(text).not.toContain("m more");
 	});
 
 	it("reads the balance when the panel opens", async () => {
@@ -131,21 +137,64 @@ describe("/wokey in-TUI panels", () => {
 		expect(syncBalance).toHaveBeenCalledOnce();
 	});
 
-	it("renders Models as a panel listing the active lineup", async () => {
+	it("renders Models as vendor tabs opening on the first vendor's lineup", async () => {
 		const text = (await renderPanel(["models"])).join("\n");
 		for (const id of ["gpt-6.1-sol", "gpt-6-luna", "gpt-6-astra"]) expect(text).toContain(id);
-		expect(text).toContain("enter/esc close");
+		for (const vendor of ["OpenAI", "Anthropic", "Zhipu", "MiniMax", "DeepSeek"]) expect(text).toContain(vendor);
+		// Other vendors wait behind their tabs — one vendor per view.
+		expect(text).not.toContain("claude-opus-5-5");
 		expect(text).not.toContain("r refresh now"); // models has no refresh action
 	});
 
-	
+	it("switches vendor tabs on left/right and marks the checked set", async () => {
+		const panel = await mount(["models"]);
+		panel.handleInput("\x1b[C"); // → Anthropic
+		let text = panel.render(100).join("\n");
+		expect(text).toContain("claude-opus-5-5");
+		expect(text).not.toContain("gpt-6-luna");
+		panel.handleInput("\x1b[C"); // → Zhipu
+		panel.handleInput("\x1b[C"); // → MiniMax
+		panel.handleInput("\x1b[C"); // → DeepSeek
+		text = panel.render(100).join("\n");
+		expect(text).toContain("deepseek-v4-flash");
+		expect(text).toContain("[unverified]");
+		panel.handleInput("\x1b[D"); // ← back to MiniMax
+		text = panel.render(100).join("\n");
+		expect(text).toContain("MiniMax-M3");
+	});
 
-	it("closes the panel on enter/escape", async () => {
+	it("toggles models with space and saves the checked set on enter", async () => {
+		const saveModels = vi.fn(async (_ids: string[]) => {});
 		const done = vi.fn();
 		const { ctx, factory } = fakeCtx();
-		await runMenu(deps(), ["models"], ctx as never);
-		const make = factory() as (t: unknown, th: unknown, kb: unknown, done: (v?: unknown) => void) => { handleInput(d: string): void };
-		make(tui, theme, {}, done).handleInput("\r");
+		await runMenu(deps({ saveModels }), ["models"], ctx as never);
+		const make = factory() as (t: unknown, th: unknown, kb: unknown, done: (v?: unknown) => void) => Panel;
+		const panel = make(tui, theme, {}, done);
+		// deps() pre-checks gpt-6-luna only: move to it, uncheck it, move to astra, check it.
+		panel.handleInput("\x1b[B");
+		panel.handleInput("\x1b[B");
+		panel.handleInput(" ");
+		panel.handleInput("\x1b[B");
+		panel.handleInput(" ");
+		panel.handleInput("\r");
+		// saveModels runs before the panel closes.
+		await new Promise((r) => setTimeout(r, 0));
+		expect(saveModels).toHaveBeenCalledOnce();
+		expect(saveModels.mock.calls[0]![0]).toEqual(["gpt-6-astra"]);
+		expect(done).toHaveBeenCalledOnce();
+	});
+
+	it("cancels on escape without saving", async () => {
+		const saveModels = vi.fn(async (_ids: string[]) => {});
+		const done = vi.fn();
+		const { ctx, factory } = fakeCtx();
+		await runMenu(deps({ saveModels }), ["models"], ctx as never);
+		const make = factory() as (t: unknown, th: unknown, kb: unknown, done: (v?: unknown) => void) => Panel;
+		const panel = make(tui, theme, {}, done);
+		panel.handleInput(" ");
+		panel.handleInput("\x1b");
+		await new Promise((r) => setTimeout(r, 0));
+		expect(saveModels).not.toHaveBeenCalled();
 		expect(done).toHaveBeenCalledOnce();
 	});
 });
@@ -183,12 +232,14 @@ describe("renderStatus", () => {
 		expect(text).not.toContain("settings");
 	});
 
-	it("shows the trust rows for both routes when expanded", () => {
+	it("shows the trust rows for every route, verified or not", () => {
 		const text = renderStatus(config, stats, LAST, { balance: BALANCE, expanded: true });
 		expect(text).toContain("pinned");
 		expect(text).toMatch(/upstream\s+chatgpt\.com/);
 		expect(text).toMatch(/upstream\s+api\.anthropic\.com/);
 		expect(text).toContain("/v1/messages");
+		// The chat route pins no upstream: the panel says so instead of blanking.
+		expect(text).toMatch(/upstream\s+unverified by design.*openai-chat/);
 		expect(text).toContain("probing");
 		expect(text).toContain("settings");
 	});
@@ -228,8 +279,8 @@ describe("renderStatus", () => {
 		const collapsed = renderStatus(config, stats, LAST, { balance: BALANCE }).split("\n");
 		const expanded = renderStatus(config, stats, LAST, { balance: BALANCE, expanded: true }).split("\n");
 		for (const line of collapsed) expect(expanded.join("\n")).toContain(line);
-		// pinned + two route upstreams + probing + settings
-		expect(expanded.length).toBe(collapsed.length + 5);
+		// pinned + three route upstreams + probing + settings
+		expect(expanded.length).toBe(collapsed.length + 6);
 	});
 
 	it("shows a dash, never a blank or NaN, when the balance is unknown", () => {
@@ -256,23 +307,43 @@ describe("renderStatus", () => {
 
 describe("/wokey mixed-model lineup", () => {
 	it("renders GPT and Claude rows with route/API identity and thinking levels", async () => {
-		const text = (await renderPanel(["models"])).join("\n");
-		for (const id of ["gpt-6.1-sol", "gpt-6-luna", "gpt-6-astra", "claude-opus-5-5"]) expect(text).toContain(id);
-		// Route/API identity per family.
-		expect(text).toContain("openai-responses");
-		expect(text).toContain("anthropic-messages");
+		const panel = await mount(["models"]);
+		const gpt = panel.render(100).join("\n");
+		for (const id of ["gpt-6.1-sol", "gpt-6-luna", "gpt-6-astra"]) expect(gpt).toContain(id);
+		expect(gpt).toContain("openai-responses");
+		panel.handleInput("\x1b[C"); // → Anthropic
+		const claude = panel.render(100).join("\n");
+		expect(claude).toContain("claude-opus-5-5");
+		expect(claude).toContain("anthropic-messages");
 		// Thinking levels come from the picker map, not prose.
-		expect(text).toMatch(/gpt-6-luna.*off.*low.*medium.*high.*xhigh.*max/);
-		expect(text).toMatch(/claude-opus-5-5.*low.*medium.*high.*xhigh.*max/);
+		expect(gpt).toMatch(/gpt-6-luna.*off.*low.*medium.*high.*xhigh.*max/);
+		expect(claude).toMatch(/claude-opus-5-5.*low.*medium.*high.*xhigh.*max/);
 	});
 
 	it("keeps prices and context limits formatted without float dust", async () => {
-		const text = (await renderPanel(["models"])).join("\n");
-		expect(text).toMatch(/gpt-6-luna.*\$0\.09.*\$0\.45/);
-		expect(text).toMatch(/claude-opus-5-5.*\$0\.6.*\$3/);
-		expect(text).toMatch(/gpt-6-luna.*1\.05M/);
-		expect(text).toMatch(/claude-opus-5-5.*1\.00M/);
-		expect(text).not.toMatch(/0\.89999999/);
+		const panel = await mount(["models"]);
+		const gpt = panel.render(100).join("\n");
+		expect(gpt).toMatch(/gpt-6-luna.*\$0\.09.*\$0\.45/);
+		expect(gpt).toMatch(/gpt-6-luna.*1\.05M/);
+		panel.handleInput("\x1b[C"); // → Anthropic
+		const claude = panel.render(100).join("\n");
+		expect(claude).toMatch(/claude-opus-5-5.*\$0\.6.*\$3/);
+		expect(claude).toMatch(/claude-opus-5-5.*1\.00M/);
+		expect(`${gpt}\n${claude}`).not.toMatch(/0\.89999999/);
+	});
+
+	it("tags the chat-completions vendors unverified with their own prices", async () => {
+		const panel = await mount(["models"]);
+		panel.handleInput("\x1b[C"); // → Anthropic
+		panel.handleInput("\x1b[C"); // → Zhipu
+		const zhipu = panel.render(100).join("\n");
+		expect(zhipu).toMatch(/glm-5\.3-flash.*\$0\.075.*\$0\.25/);
+		expect(zhipu).toContain("[unverified]");
+		panel.handleInput("\x1b[C"); // → MiniMax
+		panel.handleInput("\x1b[C"); // → DeepSeek
+		const deepseek = panel.render(100).join("\n");
+		expect(deepseek).toMatch(/deepseek-v4-flash.*\$0\.112.*\$0\.448/);
+		expect(deepseek).toContain("[unverified]");
 	});
 });
 

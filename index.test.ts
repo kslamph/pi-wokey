@@ -29,8 +29,9 @@ interface Harness {
 	restore(): void;
 }
 
-function verdict(status: ProofStatus, detail = "received bytes do not match the signed hash"): ProofReport {
+function verdict(status: ProofStatus, detail = "received bytes do not match the signed hash", routeId: ProofReport["routeId"] = "openai-codex"): ProofReport {
 	return {
+		routeId,
 		status,
 		checks: status === "verified" ? [{ name: "Response signature", ok: true, detail: "" }] : [{ name: "Response signature", ok: false, detail }],
 		upstreamHost: "chatgpt.com",
@@ -130,6 +131,16 @@ describe("proof verdict routing", () => {
 		h.report(verdict("failed"));
 		expect(h.notify).not.toHaveBeenCalled();
 		expect(h.stderr).toEqual([]);
+		h.restore();
+	});
+
+	it("never warns for unverified chat-completions routes, but still counts them", () => {
+		const h = harness("tui");
+		h.report(verdict("unproven", "verification covers Claude + GPT routes only", "openai-chat"));
+		h.report(verdict("unproven", "verification covers Claude + GPT routes only", "openai-chat"));
+		expect(h.notify).not.toHaveBeenCalled();
+		expect(h.stderr).toEqual([]);
+		expect(h.stats()).toMatchObject({ unproven: 2 });
 		h.restore();
 	});
 });

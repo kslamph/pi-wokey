@@ -29,7 +29,7 @@ import {
 	type TeeCheck,
 	type TeeProofWire,
 } from "./tee-verify-core.ts";
-import type { WokeyRoute } from "../routes.ts";
+import type { WokeyRoute, WokeyRouteId } from "../routes.ts";
 
 export type ProofStatus = "verified" | "verified-with-gaps" | "unproven" | "failed";
 
@@ -48,12 +48,16 @@ export interface ProofVerdict {
 }
 
 export interface ProofReport extends ProofVerdict {
+	/** Which route served this exchange — lets the host scope warnings (unverified routes never warn). */
+	routeId: WokeyRouteId;
 	finishedAt: number;
 	durationMs: number;
 	reason?: string;
 }
 
 export interface ProbeDeps {
+	/** Which route this fetch verifies for — attached to every report. */
+	routeId: WokeyRouteId;
 	/** Route trust policy this fetch verifies against. */
 	policy: VerificationPolicy;
 	onReport(report: ProofReport): void;
@@ -259,6 +263,23 @@ function shortReason(detail: string): string {
 }
 
 export function verifyExchange(input: VerifyInput, policy: VerificationPolicy): { report: ProofVerdict } {
+	// No measured upstream, no verdict to reach: Wokey ships no proofs for this
+	// route's form, so the exchange is unverified by design — recorded, shown in
+	// /wokey status, and never warned on. The relay's self-reported model is still
+	// extracted for display, but with no integrity binding it is never *checked*.
+	if (!policy.endpoint) {
+		const parsed = parseTeeProofEvent(input.wireBytes);
+		return {
+			report: {
+				status: "unproven",
+				checks: [
+					{ name: "Proof present", ok: false, detail: "verification covers Claude + GPT routes only — Wokey ships no proof for this form" },
+				],
+				reportedModel: input.extractServedModel(parsed.body),
+				bytes: (input.clientBytes ?? parsed.body).length,
+			},
+		};
+	}
 	const parsed = parseTeeProofEvent(input.wireBytes);
 	const proof: TeeProofWire | undefined = parsed.proof;
 
@@ -421,6 +442,7 @@ export function createProbingFetch(deps: ProbeDeps): typeof globalThis.fetch {
 				}
 				deps.onReport({
 					...report,
+					routeId: deps.routeId,
 					finishedAt: Date.now(),
 					durationMs: Date.now() - startedAt,
 					...(reason ? { reason } : {}),

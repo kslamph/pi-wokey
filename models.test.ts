@@ -1,12 +1,13 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { calculateCost, getSupportedThinkingLevels } from "@earendil-works/pi-ai";
-import { GPT_MODELS, activeModels, activeSpecs, refreshFromCatalog, toModel } from "./models.ts";
+import { GPT_MODELS, COMPLETIONS_MODELS, activeModels, activeSpecs, allSpecs, enabledModelIds, refreshFromCatalog, toModel } from "./models.ts";
 import { getRoute } from "./routes.ts";
 
 // refreshFromCatalog reconciles the baked-in table in place against the live
 // catalog, so restore it after every case rather than hand-restoring inline.
 const snapshot = () => ({
 	gpt: GPT_MODELS.map((m) => ({ ...m })),
+	chat: COMPLETIONS_MODELS.map((m) => ({ ...m })),
 	opus: activeSpecs().find((s) => s.id === "claude-opus-5-5") ? { ...activeSpecs().find((s) => s.id === "claude-opus-5-5")! } : undefined,
 });
 /** The Opus 5.5 spec, narrowed to its Anthropic variant (throws if it ever leaves its route). */
@@ -21,6 +22,7 @@ beforeEach(() => {
 });
 afterEach(() => {
 	before.gpt.forEach((s, i) => Object.assign(GPT_MODELS[i]!, s));
+	before.chat.forEach((s, i) => Object.assign(COMPLETIONS_MODELS[i]!, s));
 	if (before.opus) {
 		const live = activeSpecs().find((s) => s.id === "claude-opus-5-5");
 		if (live) Object.assign(live, before.opus);
@@ -322,6 +324,73 @@ describe("active lineup", () => {
 		expect(specs["gpt-6.1-sol"]).toEqual(["low", "medium", "high", "xhigh", "max"]);
 		expect(specs["gpt-6-astra"]).toEqual(["low", "medium", "high", "xhigh", "max"]);
 		expect(specs["gpt-6-luna"]).toEqual(["none", "low", "medium", "high", "xhigh", "max"]);
+	});
+});
+
+describe("chat-completions vendors", () => {
+	it("lists Zhipu, MiniMax and DeepSeek rows for the selector, verified lineup first", () => {
+		const ids = allSpecs().map((s) => s.id);
+		for (const id of ["glm-5.3", "glm-5.3-flash", "MiniMax-M3", "deepseek-v4-flash", "deepseek-v4-pro"]) {
+			expect(ids).toContain(id);
+		}
+		// Verified lineup stays ahead of the opt-in vendors.
+		expect(ids.indexOf("claude-opus-5-5")).toBeLessThan(ids.indexOf("glm-5.3"));
+		const vendors = Object.fromEntries(allSpecs().map((s) => [s.id, s.vendor]));
+		expect(vendors["glm-5.3-flash"]).toBe("Zhipu");
+		expect(vendors["MiniMax-M3"]).toBe("MiniMax");
+		expect(vendors["deepseek-v4-pro"]).toBe("DeepSeek");
+	});
+
+	it("resolves GLM to openai-completions with pi's zai thinking map and compat", () => {
+		const model = toModel(allSpecs().find((s) => s.id === "glm-5.3-flash")!);
+		expect(model.api).toBe("openai-completions");
+		expect(model.baseUrl).toBe("https://api.wokey.ai/v1");
+		expect(model.provider).toBe("wokey");
+		expect(model.input).toEqual(["text", "image"]);
+		expect(model.thinkingLevelMap).toEqual({ off: null, minimal: null, low: "low", medium: null, high: "high", xhigh: null, max: "max" });
+		expect(model.compat).toMatchObject({ thinkingFormat: "zai", supportsReasoningEffort: true, maxTokensField: "max_tokens" });
+		// Wokey's rates, not pi's zai catalog rates.
+		expect(model.cost).toMatchObject({ input: 0.075, output: 0.25 });
+		expect(model.contextWindow).toBe(1_000_000);
+		expect(model.maxTokens).toBe(131_072);
+	});
+
+	it("resolves DeepSeek Pro to the deepseek thinking format with reasoning replay", () => {
+		const model = toModel(allSpecs().find((s) => s.id === "deepseek-v4-pro")!);
+		expect(model.api).toBe("openai-completions");
+		expect(model.thinkingLevelMap).toEqual({ off: null, minimal: null, low: null, medium: null, high: "high", xhigh: null, max: "max" });
+		expect(model.compat).toMatchObject({ thinkingFormat: "deepseek", requiresReasoningContentOnAssistantMessages: true });
+		expect(model.maxTokens).toBe(384_000);
+	});
+
+	it("leaves MiniMax-M3 on pi's default thinking levels, text-only", () => {
+		const model = toModel(allSpecs().find((s) => s.id === "MiniMax-M3")!);
+		expect(model.api).toBe("openai-completions");
+		expect(model.input).toEqual(["text"]);
+		// pi's own entry carries no map — borrowed as-is, so pi's default applies.
+		expect("thinkingLevelMap" in model).toBe(false);
+	});
+
+	it("registers only the selector's checked set", async () => {
+		const { mkdtempSync, rmSync, writeFileSync } = await import("node:fs");
+		const { tmpdir } = await import("node:os");
+		const { join } = await import("node:path");
+		const dir = mkdtempSync(join(tmpdir(), "wokey-enabled-"));
+		const prev = process.env.WOKEY_CONFIG;
+		process.env.WOKEY_CONFIG = join(dir, "wokey.json");
+		try {
+			// No file yet: the verified default.
+			expect([...enabledModelIds()].sort()).toEqual(["claude-opus-5-5", "gpt-6-astra", "gpt-6-luna", "gpt-6.1-sol"]);
+			writeFileSync(process.env.WOKEY_CONFIG, JSON.stringify({ enabledModels: ["glm-5.3-flash", "no-such-model"] }));
+			expect(activeModels().map((m) => m.id)).toEqual(["glm-5.3-flash"]);
+			// An emptied selection falls back to the default rather than registering nothing.
+			writeFileSync(process.env.WOKEY_CONFIG, JSON.stringify({ enabledModels: [] }));
+			expect(activeModels()).toHaveLength(4);
+		} finally {
+			if (prev === undefined) delete process.env.WOKEY_CONFIG;
+			else process.env.WOKEY_CONFIG = prev;
+			rmSync(dir, { recursive: true, force: true });
+		}
 	});
 });
 

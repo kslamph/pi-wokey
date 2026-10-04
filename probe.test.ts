@@ -178,13 +178,30 @@ describe("trailing proof-event stripper", () => {
 });
 
 describe("verification gates", () => {
-	it("reports 'unproven' when the response carries no proof", () => {
-		const { report } = verifyExchange(
+	it("reports 'unproven' when the response carries no proof", () => {		const { report } = verifyExchange(
 			{ extractServedModel: GPT_ROUTE.extractServedModel, wireBytes: Buffer.from("event: response.completed\ndata: {}\n\n", "utf8"), attestationVerifier: stubAttestation() },
 			gptPolicy(),
 		);
 		expect(report.status).toBe("unproven");
 		expect(report.checks.every((c) => c.ok)).toBe(false);
+	});
+
+	it("reports unproven-by-design for routes with no measured endpoint", () => {
+		const chat = getRoute("openai-chat");
+		const wire = 'data: {"id":"chatcmpl-1","model":"glm-5.3-flash","choices":[]}\n\n';
+		const { report } = verifyExchange(
+			{ extractServedModel: chat.extractServedModel, wireBytes: Buffer.from(wire, "utf8") },
+			{ expectedPcr0: resolveConfig().expectedPcr0, endpoint: chat.endpoint, requestBinding: chat.requestBinding },
+		);
+		expect(report.status).toBe("unproven");
+		// A single design check, not a failure: nothing here can warn.
+		expect(report.checks).toHaveLength(1);
+		expect(report.checks[0]!.name).toBe("Proof present");
+		expect(report.checks[0]!.detail).toMatch(/Claude \+ GPT routes only/);
+		// The relay's self-report is still shown — but with no integrity binding
+		// it is display-only: no Served-model check is attached.
+		expect(report.reportedModel).toBe("glm-5.3-flash");
+		expect(report.checks.some((c) => c.name === "Served model")).toBe(false);
 	});
 
 	it("does not let the proof's own pcr0 satisfy the PCR0 gate", () => {
@@ -482,9 +499,9 @@ describe("accepted upstream hosts", () => {
 	});
 
 	// Trust anchors are code-pinned on the route profile, not user-configurable:
-	// there is no settings knob that widens the accepted host anymore. A second
-	// route arrives only as a new measured route profile (Task 3 adds anthropic).
+	// there is no settings knob that widens the accepted host anymore. A new
+	// route arrives only as a new measured route profile.
 	it("pins the accepted host on the route, not in user settings", () => {
-		expect(getRoute("openai-codex").endpoint.host).toBe("chatgpt.com");
+		expect(getRoute("openai-codex").endpoint!.host).toBe("chatgpt.com");
 	});
 });

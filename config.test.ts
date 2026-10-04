@@ -10,7 +10,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { DEFAULT_CONFIG, hasLegacyApiKey, loadSettings, PUBLISHED_PCR0, resolveConfig } from "./config.ts";
+import { DEFAULT_CONFIG, hasLegacyApiKey, loadSettings, PUBLISHED_PCR0, resolveConfig, saveSettings } from "./config.ts";
 
 let dir: string;
 let file: string;
@@ -91,5 +91,17 @@ describe("reduced configuration contract", () => {
 		const cfg = resolveConfig();
 		expect(cfg.verify).toBe(false);
 		expect(cfg.expectedPcr0).toBe(PUBLISHED_PCR0);
+	});
+});
+
+describe("model selection preferences", () => {
+	it("round-trips enabledModels through save and load", () => {
+		saveSettings({ verify: true, enabledModels: ["glm-5.3-flash", "MiniMax-M3"] });
+		expect(loadSettings()).toEqual({ verify: true, enabledModels: ["glm-5.3-flash", "MiniMax-M3"] });
+	});
+
+	it("rejects non-string enabledModels entries instead of half-loading them", () => {
+		writeFileSync(file, JSON.stringify({ enabledModels: ["glm-5.3-flash", 42] }));
+		expect(loadSettings()).toEqual({});
 	});
 });

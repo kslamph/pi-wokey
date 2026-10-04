@@ -11,8 +11,8 @@
 import { getSupportedThinkingLevels } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Key, matchesKey, truncateToWidth } from "@earendil-works/pi-tui";
-import { hasLegacyApiKey, settingsPath, type WokeyConfig } from "./config.ts";
-import { activeSpecs, toModel } from "./models.ts";
+import { hasLegacyApiKey, loadSettings, saveSettings, settingsPath, type WokeyConfig } from "./config.ts";
+import { activeSpecs, allSpecs, enabledModelIds, toModel, type WokeyModelSpec } from "./models.ts";
 import { getRoute, ROUTES } from "./routes.ts";
 import type { BalanceInfo } from "./balance.ts";
 import type { ProofReport } from "./verify/probe.ts";
@@ -45,6 +45,15 @@ export interface MenuDeps {
 	balance(): BalanceInfo | undefined;
 	/** Read the balance from the relay; runs when the panel opens and on `r`. Never rejects. */
 	syncBalance(): Promise<void>;
+	/** Every known model row for the selector, verified lineup first. */
+	allModels(): WokeyModelSpec[];
+	/** Currently registered model ids (the selector's checked set). */
+	enabledModels(): Set<string>;
+	/**
+	 * Persist the selector's checked set and re-register through pi's model
+	 * registry, so only the chosen models are offered. Never rejects.
+	 */
+	saveModels(ids: string[]): Promise<void>;
 }
 
 export interface StatusOptions {
@@ -90,6 +99,7 @@ export function renderStatus(
 		"",
 		`balance   ${balance}`,
 		`auth      pi-managed — /login wokey`,
+		`proofs    Claude + GPT only — Zhipu/MiniMax/DeepSeek are unverified by design (no proofs, never warned)`,
 	];
 	if (legacyKey) {
 		lines.push(
@@ -100,7 +110,10 @@ export function renderStatus(
 		lines.push(
 			`pinned    ${config.expectedPcr0 ? `${config.expectedPcr0.slice(0, 24)}…` : "(unset — model substitution NOT checked)"}`,
 			...Object.values(ROUTES).map(
-				(route) => `upstream  ${route.endpoint.host}${route.endpoint.path} ${route.endpoint.method} (route ${route.id})`,
+				(route) =>
+					route.endpoint
+						? `upstream  ${route.endpoint.host}${route.endpoint.path} ${route.endpoint.method} (route ${route.id})`
+						: `upstream  unverified by design — no proofs for this form (route ${route.id})`,
 			),
 			`probing   ${config.verify ? "on (warn-only)" : "off"} · routes openai-codex (openai-responses) + anthropic-direct (anthropic-messages)`,
 			`settings  ${settingsPath()}`,
@@ -123,38 +136,44 @@ export function renderStatus(
 	return lines.join("\n");
 }
 
+/** Rate table money: USD per 1M, trailing zeros trimmed but precision kept —
+ * sub-cent vendor rates like $0.075 or $0.112 must survive formatting. */
+const money = (n: number): string => `$${n.toFixed(5).replace(/\.?0+$/, "") || "0"}`;
+
+/** One lineup row, shared by the headless table and the interactive selector. */
+function modelRow(s: WokeyModelSpec, money: (n: number) => string): {
+	id: string; vendor: string; api: string; in: string; out: string; ctx: string; levels: string; unverified: boolean;
+} {
+	// Build the map the same way toModel does, so the listed levels are exactly
+	// what pi's picker will offer for this model.
+	const levels = getSupportedThinkingLevels(toModel(s) as never) as string[];
+	return {
+		id: s.id,
+		vendor: s.vendor,
+		api: getRoute(s.route).api,
+		// spec rates are already USD per 1M tokens — do not scale again.
+		in: money(s.input),
+		out: money(s.output),
+		ctx: s.contextWindow >= 1_000_000 ? `${(s.contextWindow / 1_000_000).toFixed(2)}M` : `${Math.round(s.contextWindow / 1000)}k`,
+		levels: levels.join(" "),
+		unverified: getRoute(s.route).verification === "none",
+	};
+}
+
 export function renderModels(): string {
-	// Rates are USD per 1M; format explicitly so the table aligns and never shows
-	// float dust like 0.8999999999999999.
-	const money = (n: number): string => `$${n.toFixed(2).replace(/\.?0+$/, "") || "0"}`;
-	const rows = activeSpecs().map((s) => {
-		// Build the map the same way toModel does, so the listed levels are exactly
-		// what pi's picker will offer for this model.
-		const levels = getSupportedThinkingLevels(toModel(s) as never) as string[];
-		return {
-			id: s.id,
-			// Model family follows the route: GPT rows go through the
-			// OpenAI-compatible relay root, Claude through Anthropic Messages.
-			family: s.route === "anthropic-direct" ? "Claude" : "GPT",
-			api: getRoute(s.route).api,
-			// spec rates are already USD per 1M tokens — do not scale again.
-			in: money(s.input),
-			out: money(s.output),
-			ctx: s.contextWindow >= 1_000_000 ? `${(s.contextWindow / 1_000_000).toFixed(2)}M` : `${Math.round(s.contextWindow / 1000)}k`,
-			levels: levels.join(" "),
-		};
-	});
+	const rows = activeSpecs().map((s) => modelRow(s, money));
 	const out = [
-		`${"model".padEnd(15)}  ${"family".padEnd(6)}  ${"api".padEnd(18)}  ${"in/1M".padEnd(7)}  ${"out/1M".padEnd(8)}  ${"ctx".padEnd(6)}thinking levels`,
-		"-".repeat(104),
+		`${"model".padEnd(15)}  ${"vendor".padEnd(9)}  ${"api".padEnd(18)}  ${"in/1M".padEnd(7)}  ${"out/1M".padEnd(8)}  ${"ctx".padEnd(6)}thinking levels`,
+		"-".repeat(107),
 	];
 	for (const r of rows) {
 		out.push(
-			`${r.id.padEnd(15)}  ${r.family.padEnd(6)}  ${r.api.padEnd(18)}  ${r.in.padEnd(7)}  ${r.out.padEnd(8)}  ${r.ctx.padEnd(6)}${r.levels}`,
+			`${r.id.padEnd(15)}  ${r.vendor.padEnd(9)}  ${r.api.padEnd(18)}  ${r.in.padEnd(7)}  ${r.out.padEnd(8)}  ${r.ctx.padEnd(6)}${r.levels}${r.unverified ? "   [unverified]" : ""}`,
 		);
 	}
 	out.push("", `Select one with /model, e.g.  /model wokey/gpt-6-luna:high`);
-	out.push("Rates are re-read from GET /v1/models on every startup (wokey uses dynamic_discount).");
+	out.push("Pick the lineup in /wokey → Models. Rates are re-read from GET /v1/models on every startup (wokey uses dynamic_discount).");
+	out.push("Zhipu/MiniMax/DeepSeek rows are unverified by design — Wokey ships no proofs for them, and they never warn.");
 	return out.join("\n");
 }
 
@@ -294,8 +313,66 @@ function openStatus(ctx: CommandContext, deps: MenuDeps): Promise<void> {
 	);
 }
 
-function openModels(ctx: CommandContext): Promise<void> {
-	return infoPanel(ctx, "wokey.ai · models", () => renderModels());
+function openModels(ctx: CommandContext, deps: MenuDeps): Promise<void> {
+	const specs = deps.allModels();
+	const vendors = [...new Set(specs.map((s) => s.vendor))];
+	const checked = new Set(deps.enabledModels());
+	let vendorIdx = 0;
+	let cursor = 0;
+	return ctx.ui.custom<void>((tui, theme, _kb, done) => {
+		// Rows follow the active tab: recomputed on every render, never captured.
+		const rows = (): WokeyModelSpec[] => specs.filter((s) => s.vendor === vendors[vendorIdx]);
+		return {
+			render(width: number) {
+				const w = Math.max(10, width);
+				const lines: string[] = [];
+				const add = (line = "") => lines.push(truncateToWidth(line, w));
+				add(theme.fg("accent", "─".repeat(w)));
+				add(` ${theme.fg("accent", theme.bold("wokey.ai · models"))}   ${vendors.map((v, i) => (i === vendorIdx ? theme.fg("accent", `[${v}]`) : ` ${v} `)).join(" ")}`);
+				add();
+				const visible = rows();
+				visible.forEach((s, i) => {
+					const r = modelRow(s, money);
+					const pointer = i === cursor ? theme.fg("accent", "❯") : " ";
+					const box = checked.has(s.id) ? theme.fg("accent", "[×]") : "[ ]";
+					add(` ${pointer} ${box} ${(r.id.padEnd(15))}  ${r.api.padEnd(18)}  ${r.in.padEnd(7)}  ${r.out.padEnd(8)}  ${r.ctx.padEnd(6)}${r.levels}${r.unverified ? "   [unverified]" : ""}`);
+				});
+				add();
+				const first = rows()[0];
+				if (first && getRoute(first.route).verification === "none") {
+					add(` ${theme.fg("text", "responses unverified by design — no proofs, never warns")}`);
+				}
+				add(` ${theme.fg("text", `←/→ vendor · ↑/↓ move · space toggle · enter save (${checked.size} on) · esc cancel`)}`);
+				return lines;
+			},
+			invalidate() {},
+				handleInput(data: string) {
+				const vendorRows = rows();
+				if (matchesKey(data, Key.left)) vendorIdx = (vendorIdx + vendors.length - 1) % vendors.length;
+				else if (matchesKey(data, Key.right)) vendorIdx = (vendorIdx + 1) % vendors.length;
+				else if (matchesKey(data, Key.up)) cursor = Math.max(0, cursor - 1);
+				else if (matchesKey(data, Key.down)) cursor = Math.min(vendorRows.length - 1, cursor + 1);
+				else if (matchesKey(data, Key.space)) {
+					const id = vendorRows[cursor]?.id;
+					if (id) {
+						if (checked.has(id)) checked.delete(id);
+						else checked.add(id);
+					}
+				} else if (matchesKey(data, Key.return)) {
+					// Persist, re-register through pi, then close: only the checked
+					// models are offered from here on.
+					void deps.saveModels([...checked]).finally(() => done());
+					return;
+				} else if (matchesKey(data, Key.escape)) {
+					done();
+					return;
+				}
+				// A vendor switch lands on its first row; a shorter list clamps.
+				cursor = Math.min(cursor, Math.max(0, rows().length - 1));
+				tui.requestRender();
+			},
+		};
+	});
 }
 
 // ── entry point ───────────────────────────────────────────────────────────────
@@ -304,7 +381,7 @@ const USAGE = "usage: /wokey  ·  /wokey status  ·  /wokey models   (credential
 
 const MENU = [
 	{ value: "status", label: "Status — verification counters, auth, trust anchors" },
-	{ value: "models", label: "Models — lineup, prices, thinking levels" },
+	{ value: "models", label: "Models — pick lineup by vendor" },
 ] as const;
 
 /**
@@ -346,7 +423,7 @@ export async function runMenu(deps: MenuDeps, args: string[], ctx: CommandContex
 		return;
 	}
 	if (verb === "models" || verb === "model" || verb === "list") {
-		if (ctx.hasUI) await openModels(ctx);
+		if (ctx.hasUI) await openModels(ctx, deps);
 		else show(renderModels());
 		return;
 	}
@@ -371,6 +448,6 @@ export async function runMenu(deps: MenuDeps, args: string[], ctx: CommandContex
 		const choice = await selectOne(ctx, "wokey.ai", [...MENU]);
 		if (choice === null) return; // cancelled
 		if (choice === "status") await openStatus(ctx, deps);
-		else if (choice === "models") await openModels(ctx);
+		else if (choice === "models") await openModels(ctx, deps);
 	}
 }

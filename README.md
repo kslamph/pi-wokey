@@ -64,7 +64,7 @@ one (warn-only). Illustrative data.*
 | Menu item | What it shows you |
 |---|---|
 | **Status** | How much balance you have left, the verdict counters, the last exchange with every individual check and its signed upstream tuple, and any catalog warnings from the last refresh. Press `m` to fold out the trust details — the pinned image measurement, the expected upstream per route, and the probing and settings state. Press `r` to refresh. |
-| **Models** | The lineup with model family, API route, current rates, context window, and the exact thinking levels each model supports. |
+| **Models** | The lineup picker: vendor tabs on top (←/→ to switch), models below (↑/↓ to move, space to check/uncheck, enter to save). Only checked models are registered with pi. Each row shows rates, context window, and the exact thinking levels pi will offer. |
 | **Credentials** | Managed by pi — `/login wokey`. This extension never reads or writes keys. |
 | **Remove credentials** | `/logout wokey`. The old `/wokey unset` command only prints this guidance. |
 
@@ -89,7 +89,7 @@ legacy key is still sitting in that file.
 
 | | |
 |---|---|
-| **Four models, two native routes** | `gpt-6.1-sol`, `gpt-6-luna`, `gpt-6-astra` through pi's OpenAI Responses adapter plus `claude-opus-5-5` through pi's native Anthropic Messages adapter, each with wokey's live context limits and thinking levels. |
+| **Nine models, three native routes** | GPT + Claude on their verified routes (below), plus Zhipu, MiniMax and DeepSeek through pi's OpenAI Chat Completions adapter — opt-in via `/wokey` → **Models**, each with wokey's live context limits and pi-borrowed thinking levels. |
 | **Verified every response** | Each reply carries a signed proof from the enclave that produced it. This extension checks it and labels the exchange. |
 | **Warn-only, never blocking** | A failed or missing proof is reported, but your reply is always delivered. A relay outage degrades into a notice, not a dead session. |
 | **Silent by default** | No popups, no prompts, no flags to set. `/wokey status` is there when you want the detail. |
@@ -108,10 +108,18 @@ Every exchange gets exactly one of four labels.
 | ❌ `failed` | Attestation, signature, hashes, or the upstream host/path did not match. Treat the response as untrusted. |
 | ⚠️ `unproven` | No proof record was present, so there was nothing to verify. |
 
+**Verification covers Claude and OpenAI (GPT) models only.** Wokey documents
+proofs for Claude Messages and GPT Responses on official routes — Zhipu, MiniMax
+and DeepSeek responses carry no proof, so they are `unproven` by design: recorded
+in `/wokey` status like every other exchange, but they never trigger a warning.
+Treat them as ordinary relayed models, not attested ones.
+
 `/wokey` shows the running counters, your remaining balance, and the full check list for
-the last exchange. In the TUI, anything that is not `verified` is raised as a styled session
+the last exchange. On verified routes (Claude + GPT), anything that is not `verified`
+is raised as a styled session
 warning (yellow, above the editor); in a headless run — `pi -p`, `--json`, RPC — it is written
-to stderr instead, so you see it even with no UI to draw in:
+to stderr instead, so you see it even with no UI to draw in. Responses from the
+unverified vendors are never warned on (see above).
 
 ```
 [wokey] ❌ wokey verification failed — Response signature: received bytes do not match the signed hash — response was modified
@@ -120,17 +128,29 @@ to stderr instead, so you see it even with no UI to draw in:
 
 ## Models
 
-Two routes, one provider. GPT models go through pi's OpenAI Responses adapter against
-the OpenAI-compatible relay root `https://api.wokey.ai/v1`; Claude Opus 5.5 goes through
-pi's native Anthropic Messages adapter against `https://api.wokey.ai`. The route is
-pinned per model — no setting can move a model to another adapter.
+Three routes, one provider. GPT models go through pi's OpenAI Responses adapter
+against the OpenAI-compatible relay root `https://api.wokey.ai/v1`; Claude Opus 5.5
+goes through pi's native Anthropic Messages adapter against `https://api.wokey.ai`;
+Zhipu, MiniMax and DeepSeek go through pi's OpenAI Chat Completions adapter against
+`https://api.wokey.ai/v1`. The route is pinned per model — no setting can move a
+model to another adapter.
 
-| Model | Family | Thinking levels |
-|---|---|---|
-| `gpt-6.1-sol` | GPT | low, medium, high, xhigh, max |
-| `gpt-6-luna` | GPT | off, low, medium, high, xhigh, max |
-| `gpt-6-astra` | GPT | low, medium, high, xhigh, max |
-| `claude-opus-5-5` | Claude | low, medium, high, xhigh, max |
+`/wokey` → **Models** is the lineup picker: vendor tabs on top (←/→), models
+below (↑/↓ to move, space to check/uncheck, enter to save). Only checked models
+are registered with pi; unchecked ones stay known but unoffered. The verified
+lineup (GPT + Claude) is on by default — the other vendors are opt-in.
+
+| Model | Vendor | Thinking levels | Verified? |
+|---|---|---|---|
+| `gpt-6.1-sol` | OpenAI | low, medium, high, xhigh, max | ✅ |
+| `gpt-6-luna` | OpenAI | off, low, medium, high, xhigh, max | ✅ |
+| `gpt-6-astra` | OpenAI | low, medium, high, xhigh, max | ✅ |
+| `claude-opus-5-5` | Anthropic | low, medium, high, xhigh, max | ✅ |
+| `glm-5.3` | Zhipu | low, high, max | ⚠️ unproven by design |
+| `glm-5.3-flash` | Zhipu | low, high, max | ⚠️ unproven by design |
+| `MiniMax-M3` | MiniMax | pi default | ⚠️ unproven by design |
+| `deepseek-v4-flash` | DeepSeek | low, high, max | ⚠️ unproven by design |
+| `deepseek-v4-pro` | DeepSeek | high, max | ⚠️ unproven by design |
 
 `gpt-6.1-sol` and `gpt-6-astra` cannot disable reasoning — asking for `off` is clamped
 up to `low`. Only `gpt-6-luna` supports turning it off. These levels come from OpenAI's
@@ -236,7 +256,8 @@ Everything else is optional. Add keys to `~/.pi/agent/wokey.json` (defaults show
 |---|---|---|
 | `expectedPcr0` | shipped constant | Your own pinned enclave measurement (96 hex digits). |
 | `verify` | `true` | Turn proof probing off entirely. |
-| `notifyOnFailure` | `true` | Surface failed verdicts, and the first `unproven` one per session. |
+| `notifyOnFailure` | `true` | Surface failed verdicts, and the first `unproven` one per session (verified routes only — see §Reading the verdict). |
+| `enabledModels` | verified lineup | Model ids registered with pi, chosen in `/wokey` → **Models**. Unknown ids are ignored; an empty list falls back to the default. |
 
 There are no adapter, base-URL, or trust-anchor settings: the route, API, relay root,
 and signed upstream tuple are pinned per model in code, so a settings file cannot widen

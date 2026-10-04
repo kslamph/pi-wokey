@@ -116,6 +116,7 @@ async function run(body: string, policyOver: Partial<VerificationPolicy> = {}): 
 	let report: ProofReport | undefined;
 	const route = getRoute("openai-codex");
 	const probing = createProbingFetch({
+		routeId: route.id,
 		policy: { expectedPcr0: CONFIG.expectedPcr0, endpoint: route.endpoint, requestBinding: route.requestBinding, ...policyOver },
 		onReport: (r) => {
 			report = r;
@@ -358,6 +359,7 @@ async function runAnthropicFixture(
 	let report: ProofReport | undefined;
 	const route = getRoute("anthropic-direct");
 	const probing = createProbingFetch({
+		routeId: route.id,
 		policy: anthropicPolicy(opts.policyOver),
 		onReport: (r) => {
 			report = r;
