@@ -128,18 +128,43 @@ describe("/wokey in-TUI panels", () => {
 		expect(syncBalance).toHaveBeenCalledOnce();
 	});
 
-	it("auto-refreshes the balance on open and offers no manual refresh key", async () => {
+	it("re-reads the balance and the catalog when the panel opens, with no manual key", async () => {
 		const refresh = vi.fn(async () => {});
 		const syncBalance = vi.fn(async () => {});
 		const panel = await mount(["status"], deps({ refresh, syncBalance }));
-		// Entering status re-reads the balance once, on mount.
+		// Entering status re-syncs once, on mount.
 		expect(syncBalance).toHaveBeenCalledOnce();
-		// There is no `r` anymore: pressing it refreshes nothing.
+		expect(refresh).toHaveBeenCalledOnce();
+		// There is no manual key: pressing keys syncs nothing more.
 		panel.handleInput("r");
 		panel.handleInput("R");
 		expect(syncBalance).toHaveBeenCalledOnce();
-		expect(refresh).not.toHaveBeenCalled();
-		expect(panel.render(100).join("\n")).not.toContain("refresh");
+		expect(refresh).toHaveBeenCalledOnce();
+		expect(panel.render(100).join("\n")).not.toContain("r refresh");
+	});
+
+	it("re-reads the catalog when the models selector opens", async () => {
+		const refresh = vi.fn(async () => {});
+		await mount(["models"], deps({ refresh }));
+		expect(refresh).toHaveBeenCalledOnce();
+	});
+
+	it("shows a transient rates hint until the sync lands, then repaints", async () => {
+		let release!: () => void;
+		const gate = new Promise<void>((r) => {
+			release = r;
+		});
+		const refresh = vi.fn(() => gate);
+		const requestRender = (tui as unknown as { requestRender: ReturnType<typeof vi.fn> }).requestRender;
+		requestRender.mockClear();
+		const panel = await mount(["models"], deps({ refresh }));
+		expect(refresh).toHaveBeenCalledOnce();
+		expect(panel.render(100).join("\n")).toContain("refreshing live rates…");
+		release();
+		await gate;
+		await new Promise((r) => setTimeout(r, 0));
+		expect(requestRender).toHaveBeenCalled();
+		expect(panel.render(100).join("\n")).not.toContain("refreshing live rates…");
 	});
 
 	it("renders Models as vendor tabs opening on the first vendor's lineup", async () => {
@@ -348,6 +373,44 @@ describe("/wokey mixed-model lineup", () => {
 		const deepseek = panel.render(100).join("\n");
 		expect(deepseek).toMatch(/deepseek-v4-flash.*\$0\.112.*\$0\.448/);
 		expect(deepseek).toContain("[unverified]");
+	});
+});
+
+describe("headless renders", () => {
+	/** Headless context capturing what `show()` notifies. */
+	function headlessCtx() {
+		const notes: string[] = [];
+		return {
+			notes,
+			ctx: { hasUI: false, ui: { notify: (text: string) => notes.push(text) } },
+		};
+	}
+
+	it("syncs the catalog before printing status", async () => {
+		const refresh = vi.fn(async () => {});
+		const syncBalance = vi.fn(async () => {});
+		const { notes, ctx } = headlessCtx();
+		await runMenu(deps({ refresh, syncBalance }), ["status"], ctx as never);
+		expect(refresh).toHaveBeenCalledOnce();
+		expect(syncBalance).toHaveBeenCalledOnce();
+		expect(notes.join("\n")).toContain("balance");
+	});
+
+	it("syncs the catalog before printing the models table", async () => {
+		const refresh = vi.fn(async () => {});
+		const { notes, ctx } = headlessCtx();
+		await runMenu(deps({ refresh }), ["models"], ctx as never);
+		expect(refresh).toHaveBeenCalledOnce();
+		expect(notes.join("\n")).toContain("gpt-6-luna");
+	});
+
+	it("still prints when the sync fails", async () => {
+		const refresh = vi.fn(async () => {
+			throw new Error("relay down");
+		});
+		const { notes, ctx } = headlessCtx();
+		await runMenu(deps({ refresh }), ["models"], ctx as never);
+		expect(notes.join("\n")).toContain("gpt-6-luna");
 	});
 });
 

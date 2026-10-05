@@ -30,6 +30,7 @@ import {
 	type TranscriptContext,
 } from "@earendil-works/pi-ai";
 import type { WokeyConfig } from "./config.ts";
+import { livePricingFor } from "./models.ts";
 import { type WokeyRoute } from "./routes.ts";
 /** Kept here so existing imports keep working; the implementation lives on the route. */
 export { applyCodexEnvelope } from "./routes.ts";
@@ -112,6 +113,45 @@ function buildRoutedOptions<T extends StreamOptions>(
 }
 
 /**
+ * Re-price one call at the current catalog rates.
+ *
+ * pi prices a turn with the `Model` object the session holds, and it only
+ * re-resolves that object when a provider registers — a catalog refresh (new
+ * peak/off-peak rates) leaves the live session pointing at stale numbers.
+ * The overlay closes that gap at the exact point pi turns usage into dollars:
+ * pi-ai's adapters call `calculateCost(model, usage)` with the object handed
+ * to `stream`, so handing them a copy carrying today's rates makes the
+ * recorded `usage.cost` — and everything that sums it (session totals, the
+ * footer, cost readers) — current without touching the session.
+ *
+ * Only catalog-owned numeric facts move (rates, context, max output): route,
+ * API, thinking map and compat never come from the catalog, so they are left
+ * exactly as the session resolved them. The caller's object is never mutated,
+ * and an already-current or unknown model passes through by identity.
+ */
+function withLivePricing(model: Model<Api>): Model<Api> {
+	const live = livePricingFor(model.id);
+	if (!live) return model;
+	const cost = model.cost;
+	if (
+		cost?.input === live.input &&
+		cost?.output === live.output &&
+		cost?.cacheRead === live.cacheRead &&
+		cost?.cacheWrite === live.cacheWrite &&
+		model.contextWindow === live.contextWindow &&
+		model.maxTokens === live.maxTokens
+	) {
+		return model;
+	}
+	return {
+		...model,
+		cost: { ...cost, input: live.input, output: live.output, cacheRead: live.cacheRead, cacheWrite: live.cacheWrite },
+		contextWindow: live.contextWindow,
+		maxTokens: live.maxTokens,
+	};
+}
+
+/**
  * Wrap one route's native pi API implementation with verification.
  *
  * The caller supplies the already-resolved native `stream`/`streamSimple` pair
@@ -136,17 +176,19 @@ export function createVerifiedStreams(
 	return {
 		stream(model: Model<Api>, context: TranscriptContext, options?: StreamOptions): AssistantMessageEventStream {
 			checkApi(model);
-			return native.stream(model, context, buildRoutedOptions(route, config, onReport, model, options));
+			const priced = withLivePricing(model);
+			return native.stream(priced, context, buildRoutedOptions(route, config, onReport, priced, options));
 		},
 		streamSimple(model: Model<Api>, context: TranscriptContext, options?: SimpleStreamOptions): AssistantMessageEventStream {
 			checkApi(model);
-			return native.streamSimple(model, context, buildRoutedOptions(route, config, onReport, model, options));
+			const priced = withLivePricing(model);
+			return native.streamSimple(priced, context, buildRoutedOptions(route, config, onReport, priced, options));
 		},
 		...(native.fetchDeferred
 			? {
 					fetchDeferred: (model: Model<Api>, handle: DeferredHandle, options?: DeferredFetchOptions): AssistantMessageEventStream => {
 						checkApi(model);
-						return native.fetchDeferred!(model, handle, options);
+						return native.fetchDeferred!(withLivePricing(model), handle, options);
 					},
 				}
 			: {}),

@@ -567,3 +567,36 @@ export function refreshFromCatalog(data: unknown): { updated: string[]; warnings
 	}
 	return { updated, warnings };
 }
+
+/**
+ * Current numeric facts for one model id: the rates pi prices with plus the
+ * window facts. Read live (after `refreshFromCatalog` moved them), never cached.
+ */
+export interface LivePricing {
+	input: number;
+	output: number;
+	cacheRead: number;
+	cacheWrite: number;
+	contextWindow: number;
+	maxTokens: number;
+}
+
+/**
+ * The catalog-owned facts for one model id, or `undefined` for an id this
+ * provider does not know (e.g. a `models.json` custom entry reusing the wokey
+ * provider id). The stream wrapper prices every call through this, so a
+ * session that keeps a pre-refresh model object still records the current
+ * peak/off-peak rate instead of a stale one.
+ */
+export function livePricingFor(id: string): LivePricing | undefined {
+	const spec = WOKEY_MODELS.find((m) => m.id === id);
+	if (!spec) return undefined;
+	return {
+		input: spec.input,
+		output: spec.output,
+		cacheRead: spec.cacheRead,
+		cacheWrite: spec.cacheWrite,
+		contextWindow: spec.contextWindow,
+		maxTokens: spec.maxTokens,
+	};
+}

@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { calculateCost, getSupportedThinkingLevels } from "@earendil-works/pi-ai";
-import { GPT_MODELS, CLAUDE_MODELS, COMPLETIONS_MODELS, activeModels, activeSpecs, allSpecs, enabledModelIds, refreshFromCatalog, toModel } from "./models.ts";
+import { GPT_MODELS, CLAUDE_MODELS, COMPLETIONS_MODELS, activeModels, activeSpecs, allSpecs, enabledModelIds, livePricingFor, refreshFromCatalog, toModel } from "./models.ts";
 import { getRoute } from "./routes.ts";
 
 // refreshFromCatalog reconciles the baked-in table in place against the live
@@ -245,6 +245,28 @@ describe("catalog reconciliation", () => {
 	it("survives a malformed catalog", () => {
 		expect(refreshFromCatalog(null).warnings).toHaveLength(1);
 		expect(refreshFromCatalog({ data: "nope" }).warnings).toHaveLength(1);
+	});
+});
+
+describe("live pricing", () => {
+	it("reads the current spec rates for a known id", () => {
+		expect(livePricingFor("deepseek-v4-flash")).toEqual({
+			input: 0.112,
+			output: 0.448,
+			cacheRead: 0.00224,
+			cacheWrite: 0,
+			contextWindow: 1_000_000,
+			maxTokens: 384_000,
+		});
+	});
+
+	it("tracks a peak/off-peak swing the moment the catalog moves", () => {
+		refreshFromCatalog({ data: [{ id: "deepseek-v4-flash", pricing: { prompt: "0.000000224", completion: "0.000000896" } }] });
+		expect(livePricingFor("deepseek-v4-flash")).toMatchObject({ input: 0.224, output: 0.896 });
+	});
+
+	it("returns undefined for an id this provider does not know", () => {
+		expect(livePricingFor("custom-thing")).toBeUndefined();
 	});
 });
 

@@ -120,9 +120,10 @@ export default function wokeyProvider(pi: ExtensionAPI, config: WokeyConfig = re
 					warnings: () => getLastCatalogWarnings(),
 					// Native catalog refresh through pi's model registry: the
 					// provider's fetchModels overlays the validated live catalog
-					// and retains the last-known lineup on failure.
+					// and retains the last-known lineup on failure. Never rejects,
+					// so panel opens and headless renders can sync unconditionally.
 					refresh: async () => {
-						await ctx.modelRegistry.refresh({ providers: [PROVIDER_ID] });
+						await ctx.modelRegistry.refresh({ providers: [PROVIDER_ID] }).catch(() => {});
 					},
 					balance: () => balance,
 					// Credentials come from pi's registry (auth.json / env), never

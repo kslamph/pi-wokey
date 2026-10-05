@@ -39,7 +39,12 @@ export interface MenuDeps {
 	last(): ProofReport | undefined;
 	/** Last catalog-overlay warnings, kept by the provider (see provider.ts). */
 	warnings(): string[];
-	/** Re-sync the catalog through pi's model registry; bound to `r` in the Status panel. */
+	/**
+	 * Re-sync the catalog through pi's model registry, so the rates on screen
+	 * are the relay's current peak/off-peak readout, not the baked-in table.
+	 * Runs when either panel opens and on every headless render, repaints on
+	 * arrival, and never rejects: a failed sync keeps the last-known lineup.
+	 */
 	refresh(): Promise<void>;
 	/** Last known account balance, or `undefined` if it was never read. Re-read on every render. */
 	balance(): BalanceInfo | undefined;
@@ -136,6 +141,18 @@ export function renderStatus(
 	return lines.join("\n");
 }
 
+/**
+ * Best-effort catalog re-sync for the headless renders: a failed sync keeps
+ * the last-known lineup, so scripting never breaks on a relay hiccup.
+ */
+async function refreshBestEffort(deps: MenuDeps): Promise<void> {
+	try {
+		await deps.refresh();
+	} catch {
+		// Keep the last-known catalog; the overlay is best-effort.
+	}
+}
+
 /** Rate table money: USD per 1M, trailing zeros trimmed but precision kept —
  * sub-cent vendor rates like $0.075 or $0.112 must survive formatting. */
 const money = (n: number): string => `$${n.toFixed(5).replace(/\.?0+$/, "") || "0"}`;
@@ -172,7 +189,7 @@ export function renderModels(): string {
 		);
 	}
 	out.push("", `Select one with /model, e.g.  /model wokey/gpt-6-luna:high`);
-	out.push("Pick the lineup in /wokey → Models. Rates are re-read from GET /v1/models on every startup (wokey uses dynamic_discount).");
+	out.push("Pick the lineup in /wokey → Models. Rates are re-read from GET /v1/models on every startup and every time /wokey opens, and each turn is priced at the current catalog rate (wokey uses dynamic_discount).");
 	out.push("Zhipu/MiniMax/DeepSeek rows are unverified by design — Wokey ships no proofs for them, and they never warn.");
 	return out.join("\n");
 }
@@ -216,8 +233,8 @@ function selectOne(ctx: CommandContext, title: string, items: { value: string; l
  * Read-only info panel. `getBody` is re-evaluated on every render, so the panel
  * shows fresh state once an action has run.
  *
- * `onMount` runs once when the panel opens (for a fire-and-forget refresh that
- * repaints on arrival); `onMore` toggles a fold inside the body. The footer
+ * `onMount` runs once when the panel opens (for the fire-and-forget refreshes
+ * that repaint on arrival); `onMore` toggles a fold inside the body. The footer
  * only advertises the keys that exist. There is deliberately no manual
  * refresh key: entering the panel already re-reads what it shows.
  */
@@ -268,8 +285,8 @@ function infoPanel(
 /**
  * The status panel folds its trust anchors behind `m`, so the body is a thunk
  * over the fold state rather than pre-rendered text. Opening the panel always
- * re-reads the balance and repaints on arrival, so the number is never older
- * than the visit — there is no manual refresh key to remember.
+ * re-reads the balance and the catalog and repaints on arrival, so neither
+ * number is older than the visit — there is no manual refresh key to remember.
  */
 function openStatus(ctx: CommandContext, deps: MenuDeps): Promise<void> {
 	// One disk read per panel open, not per render: renderStatus is pure and
@@ -287,20 +304,36 @@ function openStatus(ctx: CommandContext, deps: MenuDeps): Promise<void> {
 			}),
 		{
 			onMount: (t) => {
-				void deps.syncBalance().finally(() => t.requestRender());
+				void Promise.all([deps.syncBalance(), refreshBestEffort(deps)]).finally(() => t.requestRender());
 			},
 			onMore: () => undefined, // presence is what binds `m`; state lives above
 		},
 	);
 }
 
+/**
+ * The lineup selector, grouped by vendor. Opening it re-reads the catalog so
+ * the rates are the relay's current peak/off-peak readout — DeepSeek rows move
+ * on a daily schedule, and a baked-in price can go stale mid-session. The panel
+ * opens immediately on the last-known lineup and repaints when the sync lands;
+ * a failed sync keeps the old numbers rather than blanking the panel.
+ */
 function openModels(ctx: CommandContext, deps: MenuDeps): Promise<void> {
 	const specs = deps.allModels();
 	const vendors = [...new Set(specs.map((s) => s.vendor))];
 	const checked = new Set(deps.enabledModels());
 	let vendorIdx = 0;
 	let cursor = 0;
+	// Rows read the live spec objects on every render (refreshFromCatalog moves
+	// them in place), so a repaint is all it takes to show the synced rates.
+	let refreshing = true;
+	let requestRender = () => {};
+	void refreshBestEffort(deps).finally(() => {
+		refreshing = false;
+		requestRender();
+	});
 	return ctx.ui.custom<void>((tui, theme, _kb, done) => {
+		requestRender = () => tui.requestRender();
 		// Rows follow the active tab: recomputed on every render, never captured.
 		const rows = (): WokeyModelSpec[] => specs.filter((s) => s.vendor === vendors[vendorIdx]);
 		return {
@@ -323,7 +356,7 @@ function openModels(ctx: CommandContext, deps: MenuDeps): Promise<void> {
 				if (first && getRoute(first.route).verification === "none") {
 					add(` ${theme.fg("text", "responses unverified by design — no proofs, never warns")}`);
 				}
-				add(` ${theme.fg("text", `←/→ vendor · ↑/↓ move · space toggle · enter save (${checked.size} on) · esc cancel`)}`);
+				add(` ${theme.fg("text", `←/→ vendor · ↑/↓ move · space toggle · enter save (${checked.size} on) · esc cancel${refreshing ? " · refreshing live rates…" : ""}`)}`);
 				return lines;
 			},
 			invalidate() {},
@@ -384,9 +417,10 @@ export async function runMenu(deps: MenuDeps, args: string[], ctx: CommandContex
 		if (!ctx.hasUI) process.stderr.write(`${text}\n`);
 	};
 
-	/** Headless status: no panel to refresh, so read the balance once and print. */
+	/** Headless status: no panel to repaint, so sync once and print. */
 	const showStatusHeadless = async (): Promise<void> => {
 		await deps.syncBalance();
+		await refreshBestEffort(deps);
 		show(
 			renderStatus(deps.config(), deps.stats(), deps.last(), {
 				balance: deps.balance(),
@@ -405,7 +439,10 @@ export async function runMenu(deps: MenuDeps, args: string[], ctx: CommandContex
 	}
 	if (verb === "models" || verb === "model" || verb === "list") {
 		if (ctx.hasUI) await openModels(ctx, deps);
-		else show(renderModels());
+		else {
+			await refreshBestEffort(deps);
+			show(renderModels());
+		}
 		return;
 	}
 	if (verb === "key" || verb === "unset" || verb === "clear") {

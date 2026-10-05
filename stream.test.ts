@@ -11,7 +11,9 @@
 
 import { describe, expect, it, vi } from "vitest";
 
+import { calculateCost } from "@earendil-works/pi-ai";
 import { resolveConfig } from "./config.ts";
+import { activeSpecs, toModel } from "./models.ts";
 import { getRoute } from "./routes.ts";
 import { createVerifiedStreams } from "./stream.ts";
 import * as probeModule from "./verify/probe.ts";
@@ -353,5 +355,87 @@ describe("cross-protocol proof-wrapper parity", () => {
 		// The envelope fills gaps only; the chosen thinking level survives.
 		expect(out.reasoning).toEqual({ effort: "xhigh" });
 		expect(out.store).toBe(false);
+	});
+});
+
+describe("live pricing overlay", () => {
+	// A session model captured before a catalog refresh: peak/off-peak moved on,
+	// but the session still points at these numbers.
+	const staleLuna = () =>
+		({
+			id: "gpt-6-luna",
+			api: "openai-responses",
+			cost: { input: 999, output: 999, cacheRead: 999, cacheWrite: 999 },
+			contextWindow: 1,
+			maxTokens: 2,
+		}) as never;
+
+	it("re-prices a stale session model at the current catalog rates", () => {
+		const native = mockNative();
+		const streams = createVerifiedStreams(getRoute("openai-codex"), resolveConfig(), () => {}, native as never);
+		const stale = staleLuna();
+		streams.stream(stale, context, {});
+		streams.streamSimple(stale, context, {});
+
+		for (const method of ["stream", "streamSimple"] as const) {
+			const sent = native[method].mock.calls[0]![0] as Record<string, unknown>;
+			expect(sent).not.toBe(stale);
+			expect(sent.cost).toEqual({ input: 0.09, output: 0.45, cacheRead: 0.009, cacheWrite: 0.1125 });
+			expect(sent.contextWindow).toBe(1_050_000);
+			expect(sent.maxTokens).toBe(128_000);
+		}
+		// The session's own object is never mutated.
+		expect((stale as unknown as Record<string, unknown>).cost).toEqual({ input: 999, output: 999, cacheRead: 999, cacheWrite: 999 });
+	});
+
+	it("records the live rate into usage cost, not the stale one", () => {
+		const seen: number[] = [];
+		const native = {
+			...mockNative(),
+			stream: vi.fn((m: unknown) => {
+				const usage = {
+					input: 1_000_000,
+					output: 0,
+					cacheRead: 0,
+					cacheWrite: 0,
+					totalTokens: 1_000_000,
+					cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+				};
+				// What pi-ai's adapters do with the model they are handed.
+				calculateCost(m as never, usage as never);
+				seen.push(usage.cost.total);
+				return {} as never;
+			}),
+		};
+		createVerifiedStreams(getRoute("openai-codex"), resolveConfig(), () => {}, native as never).stream(staleLuna(), context, {});
+		// 1M input tokens at the live $0.09/1M — not $999.
+		expect(seen).toEqual([0.09]);
+	});
+
+	it("passes an already-current model through by identity", () => {
+		const current = toModel(activeSpecs().find((s) => s.id === "gpt-6-luna")!);
+		const native = mockNative();
+		createVerifiedStreams(getRoute("openai-codex"), resolveConfig(), () => {}, native as never).stream(current as never, context, {});
+		expect(native.stream.mock.calls[0]![0]).toBe(current);
+	});
+
+	it("passes an unknown model id through by identity", () => {
+		const custom = { id: "custom-thing", api: "openai-responses", cost: { input: 1, output: 2, cacheRead: 3, cacheWrite: 4 } } as never;
+		const native = mockNative();
+		createVerifiedStreams(getRoute("openai-codex"), resolveConfig(), () => {}, native as never).streamSimple(custom, context, {});
+		expect(native.streamSimple.mock.calls[0]![0]).toBe(custom);
+	});
+
+	it("re-prices deferred fetches too", () => {
+		const fetchDeferred = vi.fn((..._args: unknown[]) => ({}) as never);
+		const native = { ...mockNative(), fetchDeferred } as never;
+		const streams = createVerifiedStreams(getRoute("openai-codex"), resolveConfig(), () => {}, native);
+		streams.fetchDeferred!(staleLuna(), { id: "deferred-1" } as never, {});
+		expect((fetchDeferred.mock.calls[0]![0] as Record<string, unknown>).cost).toEqual({
+			input: 0.09,
+			output: 0.45,
+			cacheRead: 0.009,
+			cacheWrite: 0.1125,
+		});
 	});
 });
