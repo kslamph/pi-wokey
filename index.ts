@@ -19,27 +19,59 @@ import { PROVIDER_ID, loadSettings, resolveConfig, saveSettings, type WokeyConfi
 import { fetchBalance, WOKEY_API_ROOT, type BalanceInfo } from "./balance.ts";
 import { createWokeyProvider, getLastCatalogWarnings, PROVIDER_NAME } from "./provider.ts";
 import { allSpecs, enabledModelIds } from "./models.ts";
-import type { ProofReport } from "./verify/probe.ts";
+import { errorChecks, type ProofReport } from "./verify/probe.ts";
 import { getRoute } from "./routes.ts";
 import { MARK, runMenu } from "./tui.ts";
 
-interface Stats {
-	verified: number;
-	gapped: number;
-	failed: number;
-	unproven: number;
+/**
+ * What an exchange means to the user, collapsed from the four crypto statuses.
+ *
+ * `verified` and `verified-with-gaps` are the same claim: every check that can
+ * be made passed. The documented request-binding rewrite is an accepted
+ * structural limit, not a finding, so it no longer gets a colour of its own.
+ *
+ * `unverifiable` is deliberately *not* `attested`. Wokey publishes no proofs for
+ * the Chat Completions vendors, so those answers can carry no attestation at all;
+ * counting them as verified would make the word mean nothing.
+ */
+export type ExchangeOutcome = "attested" | "error" | "unverifiable";
+
+/**
+ * Route scope, not report shape: a route wokey documents no proofs for can never
+ * produce a verdict, so its `unproven` is a property of the model the user chose,
+ * not of the relay's behaviour. This is the same predicate that used to
+ * short-circuit the notification, kept in one place so the two cannot drift.
+ */
+export function classify(report: ProofReport): ExchangeOutcome {
+	if (getRoute(report.routeId).verification === "none") return "unverifiable";
+	return report.status === "verified" || report.status === "verified-with-gaps" ? "attested" : "error";
 }
 
-function freshStats(): Stats {
-	return { verified: 0, gapped: 0, failed: 0, unproven: 0 };
+export interface ExchangeTotals {
+	attested: number;
+	errors: number;
+	unverifiable: number;
+	total: number;
 }
+
+function freshStats(): ExchangeTotals {
+	return { attested: 0, errors: 0, unverifiable: 0, total: 0 };
+}
+
+/**
+ * How many errors the panel can page through. A misbehaving relay can fail
+ * hundreds of exchanges in one session; the panel shows a fixed-size page over
+ * this buffer, and beyond it the per-error notifications remain the record.
+ */
+const ERROR_LOG_CAPACITY = 20;
 
 export default function wokeyProvider(pi: ExtensionAPI, config: WokeyConfig = resolveConfig()): void {
-	let stats = freshStats();
+	let totals = freshStats();
 	let last: ProofReport | undefined;
+	/** Newest-first. Only errors are kept — nothing here is an accepted limit. */
+	let errorLog: ProofReport[] = [];
 	/** Last balance read from the relay; `undefined` until one succeeds. */
 	let balance: BalanceInfo | undefined;
-	let unprovenWarned = false;
 	let ui: { notify(message: string, level?: string): void } | undefined;
 	/** Run mode, so a verdict can be routed to the surface that can actually show it. */
 	let mode = "tui";
@@ -60,32 +92,28 @@ export default function wokeyProvider(pi: ExtensionAPI, config: WokeyConfig = re
 
 	const onReport = (report: ProofReport): void => {
 		last = report;
-		stats[report.status === "verified-with-gaps" ? "gapped" : report.status] += 1;
-		// Silent on success. "verified-with-gaps" is the documented request-binding gap
-		// (see README) — repeating it every turn trains you to ignore warnings, so it is
-		// shown in /wokey instead. Warn only on a real problem: failed check or no proof.
-		// Verification covers the Claude + GPT routes only: Wokey ships no proofs
-		// for Chat Completions vendors (Zhipu, MiniMax, DeepSeek), so their
-		// exchanges are unverified by design — recorded and shown in /wokey
-		// status, but never warned on. See the README §Reading the verdict note.
-		if (getRoute(report.routeId).verification === "none") return;
-		if (config.notifyOnFailure && report.status !== "verified" && report.status !== "verified-with-gaps") {
-			// "unproven" means the relay sent no proof at all: one notice is enough to
-			// know, and a per-turn repeat is noise. Dedup before warning — checking
-			// afterwards could never suppress anything.
-			if (report.status === "unproven") {
-				if (unprovenWarned) return;
-				unprovenWarned = true;
-			}
-			warn(report);
-		}
+		totals.total += 1;
+		const outcome = classify(report);
+		totals[outcome === "error" ? "errors" : outcome] += 1;
+		// Unverifiable by design: recorded and shown in the panel's acknowledged
+		// limits, never an error, never counted as attested, never warned on.
+		if (outcome === "unverifiable") return;
+		// Attested, including the documented request-binding gap. Silent by design:
+		// repeating a non-finding every turn trains you to ignore real warnings, so
+		// the accepted limit lives in `/wokey` instead.
+		if (outcome === "attested") return;
+		errorLog = [report, ...errorLog].slice(0, ERROR_LOG_CAPACITY);
+		if (config.notifyOnFailure) warn(report);
 	};
 
 	function warn(report: ProofReport): void {
-		const failed = report.checks.filter((c) => !c.ok);
-		const detail = failed.length > 0 ? failed.map((c) => `${c.name}: ${c.detail}`).join("; ") : (report.reason ?? "no detail");
+		// Only real failures belong here. An accepted gap and an unchecked anchor
+		// are not failures, so neither can reach this line — the panel and the
+		// notification now speak from the same classification.
+		const failed = errorChecks(report);
+		const detail = failed.map((c) => `${c.name}: ${c.detail}`).join("; ") || report.reason || "no detail";
 		const headline = report.status === "unproven" ? "response is not attested" : "verification failed";
-		const line = `${MARK[report.status]} wokey ${headline} — ${detail}`;
+		const line = `${MARK.failed} wokey ${headline} — ${detail}`;
 		// Outside the TUI (pi -p, --json, RPC) ui.notify is a no-op or advisory, so
 		// mirror to stderr: a proof verdict you cannot see is not a verdict. In the
 		// TUI it must NOT be written — a raw stderr write lands on the cursor pi is
@@ -112,7 +140,7 @@ export default function wokeyProvider(pi: ExtensionAPI, config: WokeyConfig = re
 			runMenu(
 				{
 					config: () => config,
-					stats: () => ({ ...stats }),
+					errors: () => errorLog,
 					last: () => last,
 					// Last catalog-overlay warnings, kept by the provider because
 					// the native fetchModels path has no warning channel back
@@ -168,15 +196,17 @@ export default function wokeyProvider(pi: ExtensionAPI, config: WokeyConfig = re
 	// Expose for tests / debugging.
 	(pi as unknown as { __wokey?: unknown }).__wokey = {
 		report: onReport,
-		stats: () => ({ ...stats }),
+		stats: () => ({ ...totals }),
+		errors: () => [...errorLog],
 		config: () => ({ ...config }),
 		last: () => last,
 		provider,
 		syncBalance,
 		balance: () => balance,
 		reset: () => {
-			stats = freshStats();
+			totals = freshStats();
 			last = undefined;
+			errorLog = [];
 			balance = undefined;
 		},
 	};

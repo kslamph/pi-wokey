@@ -3,14 +3,14 @@
  *
  * This drives the **real** `runMenu` / `selectOne` / `infoPanel` / model-selector
  * code from ../tui.ts with a capturing `ctx.ui.custom`, a theme that emits truecolor
- * ANSI, and synthetic ProofReports (a clean verified exchange, then a failed one).
- * Act 1 walks the menu into the model selector (vendor tabs, an opt-in model toggled
- * on) and into the status panel (trust anchors folded out and back); act 2 shows the
- * same status panel after a failed verification. The rendered lines are converted to
- * PNGs with ImageMagick's pango coder and assembled into an animated GIF.
+ * ANSI, and synthetic ProofReports. Act 1 walks the menu into the model selector
+ * (vendor tabs, an opt-in model toggled on) and into the status panel; act 2 shows
+ * the status panel after a failed verification; act 3 shows the paged error log,
+ * which only appears once more than three errors exist. The rendered lines are
+ * converted to PNGs with ImageMagick's pango coder and assembled into an animated GIF.
  *
  * Look: pure monochrome (black canvas, white text, dim grey for everything
- * else, no hue), every frame padded to the same 100xN character grid and
+ * else, no hue), every frame padded to the same 112xN character grid and
  * rendered at the same NorthWest offset, every frame held for the same 2.5s —
  * so the loop reads as one live terminal session instead of text that resizes
  * and re-centers on each frame.
@@ -29,10 +29,8 @@ import { fileURLToPath } from "node:url";
 const ROOT = resolve(fileURLToPath(new URL("..", import.meta.url)));
 
 // ── clean, non-personal demo environment ──────────────────────────────────────
-// The expanded status panel prints the settings path, so point it at a throwaway
-// file to show `.pi/agent/wokey.json` instead of a real home dir. The file holds
-// preferences only — no legacy `apiKey` — so the panel renders its normal state
-// (`auth … /login wokey`) rather than the retired-key migration warning.
+// Use a throwaway settings file so the demo cannot read or expose personal
+// configuration. It holds preferences only — no legacy `apiKey` warning.
 const SANDBOX = mkdtempSync(join(tmpdir(), "wokey-demo-"));
 process.chdir(SANDBOX);
 mkdirSync(join(SANDBOX, ".pi", "agent"), { recursive: true });
@@ -46,11 +44,10 @@ const { allSpecs, enabledModelIds } = await import(`${ROOT}/models.ts`);
 
 // The TUI's status marks are color emoji, which would break the monochrome
 // theme. Swap them for glyphs in the same font as the rest of the text; this
-// process is throwaway, so mutating the imported map is safe.
+// process is throwaway, so mutating the imported map is safe. `failed` is only
+// used by the notification path, not the panel.
 MARK.verified = "\u25cf"; // filled circle
-MARK["verified-with-gaps"] = "\u25d0"; // half-filled circle
 MARK.failed = "\u2717"; // ballot x
-MARK.unproven = "\u25b3"; // hollow triangle
 
 // Raw terminal key sequences, as `handleInput` receives them from pi.
 const KEYS = {
@@ -61,7 +58,6 @@ const KEYS = {
 	space: " ",
 	enter: "\r",
 	escape: "\x1b",
-	more: "m",
 };
 
 // Terminal grid. Every frame renders into the same box at the same offset, so
@@ -72,7 +68,9 @@ const FONT = "JetBrainsMono Nerd Font,DejaVu Sans Mono"; // fallback renders ❯
 const FONT_SIZE = 13000; // pango units (thousandths of a point)
 const BG = "#000000";
 const CANVAS_W = 1168; // 112 cols + 2*PAD_X at 10.00px/col
-const CANVAS_H = 720; // 29 rows: the tallest frame is the expanded status panel
+// Tall enough for the widest frame, the paged error log. Every other frame is
+// shorter and is padded out to the same box, so they sit top-aligned in it.
+const CANVAS_H = 720;
 const PAD_X = 24;
 const PAD_Y = 12;
 const FRAME_DELAY_MS = 2500; // every frame holds for the same beat
@@ -177,38 +175,102 @@ if (colsThatFit < WIDTH) throw new Error(`grid too wide: ${WIDTH} cols need more
 console.log(`grid ${WIDTH}x${ROWS} (cell ${cell.charW.toFixed(2)}x${cell.lineH.toFixed(2)}px, ${colsThatFit} cols fit)`);
 
 // ── synthetic but realistic ProofReports ───────────────────────────────────────
-const checks = (signatureOk) => [
-	{ name: "Remote attestation", ok: true, detail: "COSE/P-384 chains to the AWS Nitro root" },
-	{ name: "Certificate validity", ok: true, detail: "attestation certificate in date" },
-	{ name: "Enclave image (PCR0)", ok: true, detail: "matches the pinned audited image" },
-	{ name: "Signing key binding", ok: true, detail: "response signer is the attested enclave" },
-	{ name: "Nonce binding", ok: true, detail: "proof nonce matches the attestation" },
-	{ name: "Upstream host", ok: true, detail: "signed upstream = chatgpt.com" },
-	{
-		name: "Response signature",
-		ok: signatureOk,
-		detail: signatureOk ? "signature verifies and response bytes are unaltered" : "received bytes do not match the signed hash — response was modified",
-	},
-	{ name: "Upstream path", ok: true, detail: "/backend-api/codex/responses" },
-	{ name: "Served model", ok: true, detail: "gpt-6-luna" },
+// Every check carries the severity the real probe stamps on it, so the panel
+// takes exactly the branches it takes in production: `gap` for the accepted
+// request-binding limit, `fail` for a blocked check.
+const pass = (name, detail) => ({ name, ok: true, severity: "pass", detail });
+const fail = (name, detail) => ({ name, ok: false, severity: "fail", detail });
+
+const healthyChecks = () => [
+	pass("Remote attestation", "COSE/P-384 chains to the AWS Nitro root"),
+	pass("Certificate validity", "attestation certificate in date"),
+	pass("Enclave image (PCR0)", "matches the pinned audited image"),
+	pass("Signing key binding", "response signer is the attested enclave"),
+	pass("Nonce binding", "proof nonce matches the attestation"),
+	pass("Upstream host", "signed upstream = chatgpt.com"),
+	pass("Response signature", "signature verifies and response bytes are unaltered"),
+	// Accepted structural limit: shown as a disclosed limit, never as an error.
+	{ name: "Request binding", ok: false, severity: "gap", detail: "request body is rewritten by the relay — not checkable (documented gap)" },
+	pass("Upstream path", "/backend-api/codex/responses"),
+	pass("Upstream method", "POST"),
+	pass("Served model", "gpt-6.1-sol"),
 ];
-const report = (signatureOk) => ({
-	status: signatureOk ? "verified" : "failed",
-	checks: checks(signatureOk),
+
+const verified = {
+	routeId: "openai-codex",
+	status: "verified-with-gaps",
+	checks: healthyChecks(),
 	upstreamHost: "chatgpt.com",
 	upstreamPath: "/backend-api/codex/responses",
+	upstreamMethod: "POST",
 	pcr0: "437cbab8c2e5dd11a35ae5b062fe115623a013910b7c26b333e2b3af477944d630fb1dcd76fa9a9b1eefdf1d1021dec2",
-	reportedModel: "gpt-6-luna",
-	bytes: 2048,
+	reportedModel: "gpt-6.1-sol",
+	bytes: 241371,
 	finishedAt: Date.now(),
-	durationMs: 812,
+	durationMs: 18859,
+};
+
+const errorReport = (over) => ({
+	routeId: "openai-codex",
+	status: "failed",
+	checks: [fail("Response signature", "received bytes do not match the signed hash — response was modified")],
+	upstreamHost: "chatgpt.com",
+	upstreamPath: "/backend-api/codex/responses",
+	upstreamMethod: "POST",
+	reportedModel: "gpt-6.1-sol",
+	bytes: 241371,
+	finishedAt: Date.now(),
+	durationMs: 18859,
+	...over,
 });
-function deps(signatureOk) {
-	const r = report(signatureOk);
+
+const ONE_ERROR = [errorReport({})];
+
+// Newest-first, exactly the order index.ts keeps them in. Five is one more than
+// PAGE_SIZE, which is what makes the log page at all.
+const MANY_ERRORS = [
+	errorReport({
+		checks: [fail("Response signature", "received bytes do not match the signed hash — response was modified")],
+		finishedAt: Date.now(),
+	}),
+	errorReport({
+		checks: [fail("Nonce binding", "proof nonce does not match the attestation — spliced or forged proof")],
+		reportedModel: "gpt-6.1-luna",
+		bytes: 88120,
+		durationMs: 9042,
+		finishedAt: Date.now() - 97_000,
+	}),
+	errorReport({
+		checks: [fail("Upstream host", "served from relay.wokey.ai — not the official endpoint")],
+		bytes: 120433,
+		durationMs: 12003,
+		finishedAt: Date.now() - 194_000,
+	}),
+	errorReport({
+		// A fault in our own reader: the panel must not present it as a verdict on wokey.
+		checks: [fail("Verifier error", "the response could not be read for verification")],
+		reason: "could not read response for verification",
+		bytes: 0,
+		durationMs: 210,
+		finishedAt: Date.now() - 291_000,
+	}),
+	errorReport({
+		checks: [fail("Served model", `served "claude-sonnet-4-5" but "claude-opus-5-5" was requested — model substitution`)],
+		routeId: "anthropic-direct",
+		upstreamHost: "api.anthropic.com",
+		upstreamPath: "/v1/messages",
+		reportedModel: "claude-opus-5-5",
+		bytes: 64310,
+		durationMs: 7311,
+		finishedAt: Date.now() - 388_000,
+	}),
+];
+
+function deps(errors, last) {
 	return {
 		config: () => resolveConfig(),
-		stats: () => ({ verified: 12, gapped: 1, failed: signatureOk ? 0 : 1, unproven: 0 }),
-		last: () => r,
+		errors: () => errors,
+		last: () => last,
 		warnings: () => [],
 		refresh: async () => {},
 		// The demo must not touch the real account, so the balance is synthetic
@@ -259,18 +321,18 @@ const frames = [];
 const push = (lines, delay = FRAME_DELAY_MS) => {
 	// Fail loudly rather than clip: a silently cut-off panel in the README
 	// would misrepresent what the status view actually shows.
-	if (lines.length > ROWS) throw new Error(`frame overflows the grid: ${lines.length} > ${ROWS} lines — raise CANVAS_H`);
+	if (lines.length > ROWS) throw new Error(`frame overflows the grid: ${lines.length} > ${ROWS} lines — raise CANVAS_H to ${CANVAS_H + (lines.length - ROWS) * Math.ceil(cell.lineH)}`);
 	const block = lines.slice(0, ROWS);
 	while (block.length < ROWS) block.push("");
 	frames.push({ lines: block, delay });
 };
 
-// Act 1 — menu → model selector → status: the selector shows the real lineup,
-// vendor switching, an opt-in model toggled on; the status panel shows a verified
-// exchange with the trust anchors folded out via `m` and back in.
+// Act 1 — menu → model selector → status. The selector frames show the real
+// lineup, vendor switching and an opt-in model toggled on; the status panel then
+// shows a clean session.
 {
 	const h = harness();
-	void runMenu(deps(true), [], h.ctx);
+	void runMenu(deps([], verified), [], h.ctx);
 
 	const menu = await h.next();
 	push(render(menu));
@@ -292,24 +354,32 @@ const push = (lines, delay = FRAME_DELAY_MS) => {
 	push(render(menu2));
 	menu2.handleInput(KEYS.enter); // Status is the first item
 
-	const verified = await h.next();
-	push(render(verified));
-	// Fold the trust anchors out with `m`, then back in again: the same panel,
-	// so the only thing that changes between these frames is the disclosure.
-	verified.handleInput(KEYS.more);
-	push(render(verified));
-	verified.handleInput(KEYS.more);
-	push(render(verified));
+	push(render(await h.next()));
 }
-// Act 2 — the same panel after a failed verification.
+// Act 2 — the same panel after one failed verification: an error card, and no
+// accepted limit promoted into it.
 {
 	const h = harness();
-	void runMenu(deps(false), [], h.ctx);
+	void runMenu(deps(ONE_ERROR, verified), [], h.ctx);
 	const menu = await h.next();
 	push(render(menu));
 	menu.handleInput(KEYS.enter);
 	const failed = await h.next();
 	push(render(failed));
+}
+// Act 3 — five errors, one more than a page holds. The footer grows paging keys,
+// the heading becomes a position rather than a bare count, and ↓ walks the log.
+{
+	const h = harness();
+	void runMenu(deps(MANY_ERRORS, verified), [], h.ctx);
+	const paged = await (async () => {
+		const menu = await h.next();
+		menu.handleInput(KEYS.enter);
+		return h.next();
+	})();
+	push(render(paged));
+	paged.handleInput(KEYS.down);
+	push(render(paged));
 }
 
 // ── render frames and assemble the GIF ─────────────────────────────────────────

@@ -1,13 +1,13 @@
 /**
- * The /wokey interactive panels, plus renderStatus's fold behaviour. The pure
- * text builder for Models is covered elsewhere; here we drive the real
+ * The /wokey interactive panels, plus renderStatus's attention-only contract.
+ * The pure text builder for Models is covered elsewhere; here we drive the real
  * custom-component factories without a terminal to pin the panel wiring.
  */
 
 import { describe, expect, it, vi } from "vitest";
 import { resolveConfig, type WokeyConfig } from "./config.ts";
 import { allSpecs } from "./models.ts";
-import { renderStatus, runMenu, type MenuDeps, type MenuStats } from "./tui.ts";
+import { renderStatus, runMenu, PAGE_SIZE, statusFooter, type MenuDeps, type StatusOptions } from "./tui.ts";
 import type { ProofReport } from "./verify/probe.ts";
 
 const BALANCE = { availableUsd: 10.787384, reservedUsd: 0 };
@@ -21,7 +21,7 @@ const tui = { requestRender: vi.fn() } as never;
 function deps(over: Partial<MenuDeps> = {}): MenuDeps {
 	return {
 		config: () => resolveConfig(),
-		stats: () => ({ verified: 3, gapped: 1, failed: 0, unproven: 0 }),
+		errors: () => [],
 		last: () => undefined,
 		warnings: () => [],
 		refresh: async () => {},
@@ -32,6 +32,22 @@ function deps(over: Partial<MenuDeps> = {}): MenuDeps {
 		saveModels: async () => {},
 		...over,
 	};
+}
+
+/** An error report of the shape the probe produces for a blocking-check failure. */
+function errorReport(detail: string, at = Date.UTC(2026, 0, 1, 14, 32, 7)): ProofReport {
+	return {
+		routeId: "openai-codex",
+		status: "failed",
+		checks: [{ name: "Response signature", ok: false, severity: "fail", detail }],
+		upstreamHost: "chatgpt.com",
+		upstreamPath: "/backend-api/codex/responses",
+		upstreamMethod: "POST",
+		reportedModel: "gpt-6.1-sol",
+		bytes: 241371,
+		finishedAt: at,
+		durationMs: 18859,
+	} as ProofReport;
 }
 
 interface Panel {
@@ -84,35 +100,33 @@ describe("/wokey in-TUI panels", () => {
 		expect(lines[1]).toContain("wokey.ai · status");
 		expect(text).toContain("balance");
 		expect(text).toContain("$10.79");
-		expect(text).toContain("key");
-		expect(text).toContain("enter/esc close · m more");
+		expect(text).toContain("no exchange yet this session");
+		expect(text).toContain("enter/esc close");
 		expect(text).not.toContain("refresh"); // no manual key: open auto-refreshes
 	});
 
-	it("folds the trust anchors away until 'm' is pressed", async () => {
-		const panel = await mount(["status"]);
-		const collapsed = panel.render(100).join("\n");
-		for (const row of ["pinned", "upstream", "probing", "settings"]) expect(collapsed).not.toContain(row);
-
-		panel.handleInput("m");
-		const expanded = panel.render(100).join("\n");
-		for (const row of ["pinned", "upstream", "probing", "settings"]) expect(expanded).toContain(row);
-		expect(expanded).toContain("chatgpt.com");
-		expect(expanded).toContain("m less");
+	it("advertises no paging keys until the error log overflows a page", () => {
+		expect(statusFooter(0)).toBe("enter/esc close");
+		expect(statusFooter(PAGE_SIZE)).toBe("enter/esc close");
+		expect(statusFooter(PAGE_SIZE + 1)).toBe("enter/esc close · ↑/↓ error · pgup/pgdn");
 	});
 
-	it("folds back on a second 'm' and re-renders each time", async () => {
-		const panel = await mount(["status"]);
-		const collapsed = panel.render(100).join("\n");
-		panel.handleInput("m");
-		panel.handleInput("m");
-		expect(panel.render(100).join("\n")).toBe(collapsed);
+	it("has no fold key, because there is no static detail left to disclose", async () => {
+		const text = (await renderPanel(["status"])).join("\n");
+		expect(text).not.toContain("m more");
+		expect(text).not.toContain("m less");
+		// Nothing on the panel is the same on every open.
+		for (const row of ["pinned", "upstream", "probing", "settings", "/login wokey", "acknowledged limits"]) {
+			expect(text).not.toContain(row);
+		}
 	});
 
-	it("accepts an uppercase 'M' too", async () => {
+	it("renders the panel identically whatever keys are pressed, since there is no fold", async () => {
 		const panel = await mount(["status"]);
+		const before = panel.render(100).join("\n");
+		panel.handleInput("m");
 		panel.handleInput("M");
-		expect(panel.render(100).join("\n")).toContain("pinned");
+		expect(panel.render(100).join("\n")).toBe(before);
 	});
 
 	it("keeps the models selector free of the fold hint and shows its own keys", async () => {
@@ -230,107 +244,221 @@ describe("/wokey in-TUI panels", () => {
 
 describe("renderStatus", () => {
 	const config: WokeyConfig = resolveConfig();
-	const stats: MenuStats = { verified: 3, gapped: 1, failed: 0, unproven: 0 };
 	const LAST: ProofReport = {
-		status: "verified",
-		checks: [{ name: "Upstream host", ok: true, detail: "signed upstream = chatgpt.com" }],
+		status: "verified-with-gaps",
+		checks: [
+			{ name: "Remote attestation", ok: true, severity: "pass", detail: "" },
+			{ name: "Response signature", ok: true, severity: "pass", detail: "" },
+			{ name: "Request binding", ok: false, severity: "gap", detail: "request body is rewritten by the relay — not checkable (documented gap)" },
+		],
 		upstreamHost: "chatgpt.com",
 		upstreamPath: "/backend-api/codex/responses",
 		upstreamMethod: "POST",
-		reportedModel: "gpt-6-luna",
-		bytes: 2048,
-		durationMs: 812,
+		reportedModel: "gpt-6.1-sol",
+		bytes: 241371,
+		durationMs: 18859,
+		finishedAt: Date.UTC(2026, 0, 1, 14, 32, 7),
 	} as ProofReport;
 
-	it("keeps counters, balance, key and the last exchange when collapsed", () => {
-		const text = renderStatus(config, stats, LAST, { balance: BALANCE });
+	it("leads with the last exchange and shows no counter row at all", () => {
+		const text = renderStatus(config, LAST, { balance: BALANCE });
+		// The four-glyph legend read as "31 problems" on a healthy session; the tally
+		// it replaced added nothing actionable. Neither is here.
+		expect(text).not.toMatch(/✅\s*\d/);
+		expect(text).not.toMatch(/🟡|⚠️/);
+		expect(text).toContain("no errors this session");
 		expect(text).toContain("$10.79");
-		// Pin the whole pi-managed auth row, not a substring that also
-		// matches "wokey" ("key" alone passes vacuously via "/login wokey").
-		expect(text).toContain("auth      pi-managed — /login wokey");
-		expect(text).not.toContain("WOKEY_API_KEY");
-		expect(text).toContain("chatgpt.com");
-		expect(text).toContain("Upstream host");
+		expect(text).toContain("chatgpt.com/backend-api/codex/responses POST");
 	});
 
-	it("hides the four trust rows when collapsed", () => {
-		const text = renderStatus(config, stats, LAST, { balance: BALANCE });
-		expect(text).not.toContain("pinned");
-		expect(text).not.toContain("upstream  ");
-		expect(text).not.toContain("probing");
-		expect(text).not.toContain("settings");
+	it("counts an accepted gap as verified, and names the check that did not run", () => {
+		const text = renderStatus(config, LAST, { balance: BALANCE });
+		expect(text).toContain("verified · 2 of 3 checks · Request binding not checkable");
+		// No ✗ anywhere: the request-binding gap is disclosed, never shown as an error.
+		expect(text).not.toContain("✗");
 	});
 
-	it("shows the trust rows for every route, verified or not", () => {
-		const text = renderStatus(config, stats, LAST, { balance: BALANCE, expanded: true });
-		expect(text).toContain("pinned");
-		expect(text).toMatch(/upstream\s+chatgpt\.com/);
-		expect(text).toMatch(/upstream\s+api\.anthropic\.com/);
-		expect(text).toContain("/v1/messages");
-		// The chat route pins no upstream: the panel says so instead of blanking.
-		expect(text).toMatch(/upstream\s+unverified by design.*openai-chat/);
-		expect(text).toContain("probing");
-		expect(text).toContain("settings");
+	it("distinguishes a check that cannot be checked from one that was not checked", () => {
+		const unpinned = {
+			...LAST,
+			checks: [{ name: "Enclave image (PCR0)", ok: false, severity: "unchecked", detail: "" }],
+		} as ProofReport;
+		expect(renderStatus(config, unpinned, { balance: BALANCE })).toContain("Enclave image (PCR0) not checked");
+		expect(renderStatus(config, LAST, { balance: BALANCE })).toContain("Request binding not checkable");
 	});
 
-	it("defaults to collapsed when no options are passed, so old callers still compile", () => {
-		const text = renderStatus(config, stats, LAST);
-		expect(text).not.toContain("pinned");
-		expect(text).toContain("balance");
+	it("omits the caveat clause when every check ran", () => {
+		const all = { ...LAST, checks: [{ name: "Response signature", ok: true, severity: "pass", detail: "" }] } as ProofReport;
+		expect(renderStatus(config, all, { balance: BALANCE })).toContain("verified · 1 of 1 checks");
+		expect(renderStatus(config, all, { balance: BALANCE })).not.toContain("not check");
 	});
 
-	it("shows the last signed endpoint tuple with its method", () => {
-		const text = renderStatus(config, stats, LAST, { balance: BALANCE });
-		expect(text).toMatch(/chatgpt\.com.*\/backend-api\/codex\/responses.*POST/);
+	it("humanizes bytes and latency instead of printing raw numbers", () => {
+		const text = renderStatus(config, LAST, { balance: BALANCE });
+		expect(text).toContain("241 KB · 18.9 s");
+		expect(text).not.toContain("241371 B");
 	});
 
-	it("points at pi-managed auth instead of a duplicate key store", () => {
-		const text = renderStatus(config, stats, LAST, { balance: BALANCE });
-		expect(text).toContain("/login wokey");
-		expect(text).not.toMatch(/wokey\.json.*(saved|mirrored|write)/i);
+	it("never restates the accepted limits — they are static and already acknowledged", () => {
+		const text = renderStatus(config, LAST, { balance: BALANCE });
+		expect(text).not.toContain("acknowledged limits");
+		expect(text).not.toMatch(/request binding —|chat models —/);
+		expect(text).not.toContain("unverified by design");
 	});
 
-	it("warns when a legacy wokey.json key must be re-entered", () => {
-		const text = renderStatus(config, stats, LAST, { balance: BALANCE, legacyKey: true });
-		expect(text).toContain("/login wokey");
-		expect(text).toMatch(/re-?enter/i);
-		expect(renderStatus(config, stats, LAST, { balance: BALANCE, legacyKey: false })).not.toMatch(/re-?enter/i);
+	it("shows an error card with the reason, the endpoint and the exchange facts", () => {
+		const text = renderStatus(config, undefined, { balance: BALANCE, errors: [errorReport("received bytes do not match the signed hash — response was modified")] });
+		expect(text).toContain("error");
+		expect(text).toContain("✗ Response signature — received bytes do not match the signed hash");
+		expect(text).toContain("chatgpt.com/backend-api/codex/responses POST");
+		expect(text).toContain("gpt-6.1-sol · 241 KB · 18.9 s");
+		// An error replaces the last-exchange block rather than duplicating it.
+		expect(text).not.toContain("no errors this session");
 	});
 
-	it("surfaces catalog overlay warnings in the status", () => {
-		const warning = "catalog: gpt-6-luna not listed upstream — keeping baked-in values";
-		const text = renderStatus(config, stats, LAST, { balance: BALANCE, warnings: [warning] });
-		expect(text).toContain(warning);
-		expect(renderStatus(config, stats, LAST, { balance: BALANCE, warnings: [] })).not.toContain(warning);
+	it("shows only the error when there is one", () => {
+		const text = renderStatus(config, undefined, { balance: BALANCE, errors: [errorReport("boom")] });
+		expect(text).not.toContain("last ");
+		expect(text).not.toContain("no errors");
+		expect(text).toContain("error");
 	});
 
-	it("is a strict superset when expanded — nothing else moves or disappears", () => {
-		const collapsed = renderStatus(config, stats, LAST, { balance: BALANCE }).split("\n");
-		const expanded = renderStatus(config, stats, LAST, { balance: BALANCE, expanded: true }).split("\n");
-		for (const line of collapsed) expect(expanded.join("\n")).toContain(line);
-		// pinned + three route upstreams + probing + settings
-		expect(expanded.length).toBe(collapsed.length + 6);
+	it("says a verifier fault is not a verdict on wokey", () => {
+		// The shape createProbingFetch produces when the body cannot be read.
+		const fault = {
+			...errorReport("the response could not be read for verification"),
+			checks: [{ name: "Verifier error", ok: false, severity: "fail", detail: "the response could not be read for verification" }],
+			reason: "could not read response for verification",
+			bytes: 0,
+		} as ProofReport;
+		const text = renderStatus(config, undefined, { balance: BALANCE, errors: [fault] });
+		expect(text).toContain("✗ Verifier error");
+		expect(text).toContain("not a verdict on wokey");
+		// It is still an error card, not an accepted limit.
+		expect(text).toContain("error");
+	});
+
+	it("pages the log and shows a position, not a bare count", () => {
+		const errors = Array.from({ length: 5 }, (_, i) => errorReport(`failure ${i}`, Date.UTC(2026, 0, 1, 14, 30 - i)));
+		const first = renderStatus(config, undefined, { balance: BALANCE, errors });
+		expect(first).toContain("errors 1–3 of 5");
+		const second = renderStatus(config, undefined, { balance: BALANCE, errors, cursor: 1 });
+		expect(second).toContain("errors 4–5 of 5");
+		expect(second).toContain("failure 3");
+		expect(second).not.toContain("failure 0");
+	});
+
+	it("clamps the cursor at both ends rather than rendering an empty page", () => {
+		const errors = Array.from({ length: 5 }, (_, i) => errorReport(`failure ${i}`));
+		expect(renderStatus(config, undefined, { balance: BALANCE, errors, cursor: -3 })).toContain("errors 1–3 of 5");
+		expect(renderStatus(config, undefined, { balance: BALANCE, errors, cursor: 99 })).toContain("errors 4–5 of 5");
+		// A log that shrank below the cursor still shows its only page.
+		expect(renderStatus(config, undefined, { balance: BALANCE, errors: [errorReport("only")], cursor: 7 })).toContain("only");
+	});
+
+	it("pages the log with the arrow and page keys, and never runs off the end", async () => {
+		const errors = Array.from({ length: 8 }, (_, i) => errorReport(`failure ${i}`, Date.UTC(2026, 0, 1, 14, 30 - i)));
+		const panel = await mount(["status"], deps({ errors: () => errors }));
+		const text = (): string => panel.render(100).join("\n");
+		expect(text()).toContain("errors 1–3 of 8");
+		panel.handleInput("\x1b[B"); // ↓ one card
+		expect(text()).toContain("errors 4–6 of 8");
+		panel.handleInput("\x1b[6~"); // pageDown → last page
+		expect(text()).toContain("errors 7–8 of 8");
+		panel.handleInput("\x1b[B"); // ↓ past the end, clamped
+		expect(text()).toContain("errors 7–8 of 8");
+		panel.handleInput("\x1b[H"); // home
+		expect(text()).toContain("errors 1–3 of 8");
+		panel.handleInput("\x1b[5~"); // pageUp at the top, clamped
+		expect(text()).toContain("errors 1–3 of 8");
+		panel.handleInput("\x1b[F"); // end
+		expect(text()).toContain("errors 7–8 of 8");
+		panel.handleInput("\x1b[5~"); // pageUp back one page
+		expect(text()).toContain("errors 4–6 of 8");
+	});
+
+	it("ignores paging keys entirely when the log fits one page", async () => {
+		const panel = await mount(["status"], deps({ errors: () => [errorReport("only failure")] }));
+		panel.handleInput("\x1b[B");
+		expect(panel.render(100).join("\n")).toContain("only failure");
+		expect(panel.render(100).join("\n")).toContain("enter/esc close");
+	});
+
+	it("wraps long reasons and never exceeds the wrap width", () => {
+		const text = renderStatus(config, undefined, { balance: BALANCE, errors: [errorReport("served ".concat("an-unexpected-model ".repeat(12)))] });
+		for (const line of text.split("\n")) expect(line.length).toBeLessThanOrEqual(76);
+		// The continuation is visibly part of the same statement.
+		expect(text).toMatch(/✗ Response signature — served[\s\S]*an-unexpected-model/);
+	});
+
+	it("leaves no trailing whitespace on any line", () => {
+		for (const text of [renderStatus(config, LAST, { balance: BALANCE }), renderStatus(config, undefined, { balance: BALANCE, errors: [errorReport("boom")] })]) {
+			for (const line of text.split("\n")) expect(line).toBe(line.trimEnd());
+		}
+	});
+
+	it("warns when verification has been switched off, and stays silent when it has not", () => {
+		expect(renderStatus(config, LAST, { balance: BALANCE })).not.toContain("verification is OFF");
+		expect(renderStatus({ ...config, verify: false }, LAST, { balance: BALANCE })).toContain(
+			"verification is OFF — responses are not checked at all",
+		);
+	});
+
+	it("never renders the static trust anchors or the check roster", () => {
+		for (const text of [renderStatus(config, LAST, { balance: BALANCE }), renderStatus(config, undefined, { balance: BALANCE, errors: [errorReport("boom")] })]) {
+			for (const row of ["pinned", "upstream ", "probing", "settings ", "/login wokey", "Remote attestation", "Enclave image"]) {
+				expect(text).not.toContain(row);
+			}
+		}
+	});
+
+	it("names an unpinned anchor as a configuration weakness, not an exchange error", () => {
+		const weak = renderStatus({ ...config, expectedPcr0: "" }, LAST, { balance: BALANCE });
+		expect(weak).toContain("verification is weaker than intended");
+		expect(weak).toMatch(/no audit PCR0 is pinned/);
+		expect(weak).not.toContain("✗");
+		// There is no fold to hide behind, so it is always on screen.
+		expect(renderStatus(config, LAST, { balance: BALANCE })).not.toContain("verification is weaker");
+	});
+
+	it("has retired the fold: a stale `expanded` flag changes nothing", () => {
+		// The anchors were identical on every open, so they became documentation.
+		// An old caller still passing `expanded` must not resurrect the fold.
+		const plain = renderStatus(config, LAST, { balance: BALANCE });
+		for (const row of ["pinned", "upstream", "probing", "settings", "last exchange —"]) {
+			expect(plain).not.toContain(row);
+		}
+		const stale = { balance: BALANCE, expanded: true } as unknown as StatusOptions;
+		expect(renderStatus(config, LAST, stale)).toBe(plain);
 	});
 
 	it("shows a dash, never a blank or NaN, when the balance is unknown", () => {
-		expect(renderStatus(config, stats, LAST)).toMatch(/balance\s+—/);
-		expect(renderStatus(config, stats, LAST, { balance: undefined })).toMatch(/balance\s+—/);
+		expect(renderStatus(config, LAST)).toMatch(/balance\s+—/);
+		expect(renderStatus(config, LAST, { balance: undefined })).toMatch(/balance\s+—/);
 	});
 
 	it("surfaces a reservation next to the available amount when one is held", () => {
-		const text = renderStatus(config, stats, LAST, { balance: { availableUsd: 5, reservedUsd: 1.5 } });
+		const text = renderStatus(config, LAST, { balance: { availableUsd: 5, reservedUsd: 1.5 } });
 		expect(text).toContain("$5.00");
 		expect(text).toContain("$1.50 reserved");
+		expect(renderStatus(config, LAST, { balance: BALANCE })).not.toContain("reserved");
 	});
 
-	it("omits the reservation when nothing is held", () => {
-		expect(renderStatus(config, stats, LAST, { balance: BALANCE })).not.toContain("reserved");
-	});
-
-	it("still renders with no exchange yet and no balance", () => {
-		const text = renderStatus(config, stats, undefined);
-		expect(text).toContain("No response verified yet this session.");
+	it("does not claim a clean session when nothing has happened yet", () => {
+		const text = renderStatus(config, undefined);
+		expect(text).toContain("no exchange yet this session");
 		expect(text).toMatch(/balance\s+—/);
+	});
+
+	it("warns when a legacy wokey.json key must be re-entered", () => {
+		expect(renderStatus(config, LAST, { balance: BALANCE, legacyKey: true })).toMatch(/re-?enter/i);
+		expect(renderStatus(config, LAST, { balance: BALANCE, legacyKey: false })).not.toMatch(/re-?enter/i);
+	});
+
+	it("surfaces catalog overlay warnings in the status", () => {
+		const warning = "catalog: gpt-6.1-luna not listed upstream — keeping baked-in values";
+		expect(renderStatus(config, LAST, { balance: BALANCE, warnings: [warning] })).toContain(warning);
+		expect(renderStatus(config, LAST, { balance: BALANCE, warnings: [] })).not.toContain(warning);
 	});
 });
 

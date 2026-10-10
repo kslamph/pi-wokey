@@ -13,29 +13,34 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Key, matchesKey, truncateToWidth } from "@earendil-works/pi-tui";
 import { hasLegacyApiKey, loadSettings, saveSettings, settingsPath, type WokeyConfig } from "./config.ts";
 import { activeSpecs, allSpecs, enabledModelIds, toModel, type WokeyModelSpec } from "./models.ts";
-import { getRoute, ROUTES } from "./routes.ts";
+import { getRoute } from "./routes.ts";
 import type { BalanceInfo } from "./balance.ts";
-import type { ProofReport } from "./verify/probe.ts";
+import { errorChecks, type ProofReport } from "./verify/probe.ts";
 
 export type CommandContext = Parameters<Parameters<ExtensionAPI["registerCommand"]>[1]["handler"]>[1];
 
-export interface MenuStats {
-	verified: number;
-	gapped: number;
-	failed: number;
-	unproven: number;
-}
-
 export const MARK = {
 	verified: "✅",
-	"verified-with-gaps": "🟡",
 	failed: "❌",
-	unproven: "⚠️",
 } as const;
+
+/**
+ * Errors per page in the error log.
+ *
+ * `Component.render(width)` is handed a width and nothing else — no height, no
+ * viewport size — so a panel cannot scroll itself and cannot know how much of it
+ * the terminal will show. The page size is therefore fixed, and paging is
+ * declared in the footer only when the log does not fit.
+ */
+export const PAGE_SIZE = 3;
+
+/** Body text wraps here; verified to fit widths 100 and 112 without truncation. */
+const WRAP = 76;
 
 export interface MenuDeps {
 	config(): WokeyConfig;
-	stats(): MenuStats;
+	/** Newest-first error log; only real failures, never an accepted limit. */
+	errors(): readonly ProofReport[];
 	last(): ProofReport | undefined;
 	/** Last catalog-overlay warnings, kept by the provider (see provider.ts). */
 	warnings(): string[];
@@ -64,8 +69,6 @@ export interface MenuDeps {
 export interface StatusOptions {
 	/** Account balance to show. `undefined` renders a dash, never a blank. */
 	balance?: BalanceInfo;
-	/** Reveal the trust anchors (pinned / upstream / probing / settings). */
-	expanded?: boolean;
 	/** Last catalog-overlay warnings; rendered as their own section. */
 	warnings?: string[];
 	/**
@@ -74,6 +77,10 @@ export interface StatusOptions {
 	 * defaults to false so the renderer stays pure. Pass explicitly in tests.
 	 */
 	legacyKey?: boolean;
+	/** Newest-first error log. Only real failures — never an accepted limit. */
+	errors?: readonly ProofReport[];
+	/** Which page of the error log to show. Clamped here, so the renderer stays pure. */
+	cursor?: number;
 }
 
 // ── renderers (pure, so they are trivially testable and reuseable headlessly) ──
@@ -82,63 +89,164 @@ export interface StatusOptions {
  * not "$5" — trimming zeros is for the Models rate table, not for what you owe. */
 const usd = (n: number): string => `$${n.toFixed(2)}`;
 
+/** Byte counts as a person reads them: exact under 1 kB, rounded above. */
+const bytes = (n: number): string => (n >= 1000 ? `${Math.round(n / 1000)} KB` : `${n} B`);
+
+/** Latency in ms, switching to seconds only once ms stops being readable. */
+const millis = (ms: number): string => (ms >= 10_000 ? `${(ms / 1000).toFixed(1)} s` : `${ms} ms`);
+
+/** Wall-clock of a finished exchange, so errors can be placed within a session. */
+const clock = (epochMs: number): string => {
+	const d = new Date(epochMs);
+	const p = (n: number): string => String(n).padStart(2, "0");
+	return `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
+};
+
 /**
- * The always-visible half of the status view: counters, what you can spend, which
- * key is in use, and the last exchange with its individual checks. The trust
- * anchors live behind `m` — they are the reassuring part, and the first thing
- * anyone should read on *failure*, so they fold away only when `expanded` is set.
+ * Greedy wrap with the continuation aligned under the first word, so a wrapped
+ * reason still reads as one statement. No line this produces exceeds `WRAP`.
  */
-export function renderStatus(
-	config: WokeyConfig,
-	stats: MenuStats,
-	last: ProofReport | undefined,
-	opts: StatusOptions = {},
-): string {
+function wrap(text: string, head: string, width = WRAP): string[] {
+	const indent = head.length;
+	const out: string[] = [];
+	let line = "";
+	for (const word of text.split(/\s+/).filter(Boolean)) {
+		if (line && indent + line.length + 1 + word.length > width) {
+			out.push(line);
+			line = word;
+		} else line = line ? `${line} ${word}` : word;
+	}
+	if (line) out.push(line);
+	return out.map((l, i) => (i === 0 ? head + l : " ".repeat(indent) + l));
+}
+
+/** Where an exchange was served, for an error card that has no proof to quote. */
+function endpointOf(report: ProofReport): string {
+	if (!report.upstreamHost) return getRoute(report.routeId).id;
+	return `${report.upstreamHost}${report.upstreamPath ?? ""}${report.upstreamMethod ? ` ${report.upstreamMethod}` : ""}`;
+}
+
+/**
+ * The status view, answering exactly one question: did an exchange that was
+ * supposed to verify actually fail?
+ *
+ * The panel is held to one rule — everything on it must be *surprising and new*.
+ * Text that is identical on every open (the pinned PCR0, the three upstream
+ * tuples, the auth line, the settings path, the names of the eleven checks, the
+ * accepted-limits prose) is documentation, not status: it costs the reader lines
+ * to re-read and can never change what they do. That material lives in README
+ * §Trust model instead. What stays is per-exchange (errors, the last exchange),
+ * a number the reader wants (balance), and the handful of conditions that are
+ * only rendered when they are actually true.
+ *
+ * No counter row either. Errors are listed, and a list is its own count — a tally
+ * beside it added nothing a reader could act on, and the four-glyph legend it
+ * replaced was read as 31 problems on a completely healthy session.
+ *
+ * Block order is deliberate: the component is handed no height, so an overflowing
+ * body loses its *tail* — the least important block goes last.
+ */
+export function renderStatus(config: WokeyConfig, last: ProofReport | undefined, opts: StatusOptions = {}): string {
 	const legacyKey = opts.legacyKey ?? false;
 	const warnings = opts.warnings ?? [];
+	const errors = opts.errors ?? [];
 	const balance = opts.balance
 		? `${usd(opts.balance.availableUsd)} available${opts.balance.reservedUsd > 0 ? ` · ${usd(opts.balance.reservedUsd)} reserved` : ""}`
 		: "—";
-	const lines = [
-		`wokey.ai · ${MARK.verified} ${stats.verified}   ${MARK["verified-with-gaps"]} ${stats.gapped}   ${MARK.failed} ${stats.failed}   ${MARK.unproven} ${stats.unproven}`,
-		"",
-		`balance   ${balance}`,
-		`auth      pi-managed — /login wokey`,
-		`proofs    Claude + GPT only — Zhipu/MiniMax/DeepSeek are unverified by design (no proofs, never warned)`,
-	];
+	const lines: string[] = [];
+
+	// ── errors, or the reassuring last exchange in their place ────────────────
+	const pages = Math.max(1, Math.ceil(errors.length / PAGE_SIZE));
+	const page = Math.min(Math.max(opts.cursor ?? 0, 0), pages - 1);
+	const shown = errors.slice(page * PAGE_SIZE, page * PAGE_SIZE + PAGE_SIZE);
+
+	if (errors.length === 0) {
+		// "No errors" would be a claim about a session that never ran, so an empty
+		// log with no exchange says what is actually true.
+		lines.push(last ? "no errors this session" : "no exchange yet this session");
+		if (last) {
+			// Name the checks that did not run, rather than listing all eleven every
+			// turn: the count is per-exchange news, the roster is not.
+			const skipped = last.checks.filter((c) => !c.ok);
+			const why = skipped.map((c) => `${c.name} ${c.severity === "gap" ? "not checkable" : "not checked"}`).join(", ");
+			lines.push(
+				"",
+				`last    ${endpointOf(last)}`,
+				`        ${last.reportedModel ?? "?"} · ${bytes(last.bytes)} · ${millis(last.durationMs)}`,
+				...wrap(`${MARK.verified} verified · ${last.checks.length - skipped.length} of ${last.checks.length} checks${why ? ` · ${why}` : ""}`, "        "),
+			);
+		}
+	} else {
+		// The count appears only once the log cannot be read in one page, and then
+		// as a position rather than a bare total.
+		lines.push(
+			pages > 1
+				? `errors ${page * PAGE_SIZE + 1}–${page * PAGE_SIZE + shown.length} of ${errors.length}`
+				: `error${errors.length === 1 ? "" : "s"}`,
+		);
+		lines.push("");
+		for (const report of shown) {
+			lines.push(`  ${clock(report.finishedAt)} · ${endpointOf(report)}`);
+			for (const c of errorChecks(report)) lines.push(...wrap(`${c.name} — ${c.detail}`, "    ✗ "));
+			// A fault in our own reader is not a verdict on wokey and must not read as
+			// one. Annotated on the card, where it cannot be missed.
+			if (report.reason === "could not read response for verification") {
+				lines.push(...wrap("not a verdict on wokey — the answer was delivered unchecked", "      "));
+			}
+			lines.push(`      ${report.reportedModel ?? "?"} · ${bytes(report.bytes)} · ${millis(report.durationMs)}`);
+		}
+	}
+
+	lines.push("", `balance  ${balance}`);
+
 	if (legacyKey) {
 		lines.push(
-			`          [!] a legacy key is still stored in ${settingsPath()} — re-enter it with /login wokey, then delete the apiKey entry`,
+			`[!] a legacy key is still stored in ${settingsPath()} — re-enter it with /login wokey, then delete the apiKey entry`,
 		);
-	}
-	if (opts.expanded) {
-		lines.push(
-			`pinned    ${config.expectedPcr0 ? `${config.expectedPcr0.slice(0, 24)}…` : "(unset — model substitution NOT checked)"}`,
-			...Object.values(ROUTES).map(
-				(route) =>
-					route.endpoint
-						? `upstream  ${route.endpoint.host}${route.endpoint.path} ${route.endpoint.method} (route ${route.id})`
-						: `upstream  unverified by design — no proofs for this form (route ${route.id})`,
-			),
-			`probing   ${config.verify ? "on (warn-only)" : "off"} · routes openai-codex (openai-responses) + anthropic-direct (anthropic-messages)`,
-			`settings  ${settingsPath()}`,
-		);
-	}
-	if (!last) {
-		lines.push("", "No response verified yet this session.");
-	} else {
-		lines.push(
-			"",
-			`last      ${MARK[last.status]} ${last.upstreamHost ?? "—"}${last.upstreamPath ?? ""}${last.upstreamMethod ? ` ${last.upstreamMethod}` : ""}`,
-			`          model ${last.reportedModel ?? "?"} · ${last.bytes} B · ${last.durationMs} ms`,
-		);
-		for (const c of last.checks) lines.push(`  ${c.ok ? "✓" : "✗"} ${c.name}${c.ok ? "" : ` — ${c.detail}`}`);
 	}
 	if (warnings.length > 0) {
 		lines.push("", "catalog warnings:");
-		for (const w of warnings) lines.push(`  ! ${w}`);
+		for (const w of warnings) lines.push(...wrap(w, "  ! "));
 	}
+
+	// ── Conditions, not documentation. Each of these renders only when it is
+	//    actually true, so the panel never spends a line on the default case.
+	//
+	// Verification switched off is the most surprising thing this extension can
+	// be in, and it used to hide behind a static `probing on (warn-only)` row.
+	if (!config.verify) {
+		lines.push("", "verification is OFF — responses are not checked at all");
+	}
+	// An unset anchor shrinks the claim; it is the exchange's misconfiguration to
+	// report as such, never a failed exchange.
+	if (!config.expectedPcr0) {
+		lines.push("");
+		lines.push("verification is weaker than intended");
+		lines.push(
+			...wrap(
+				`no audit PCR0 is pinned, so enclave image substitution is not checked. Set expectedPcr0 in ${settingsPath()}.`,
+				"  ",
+			),
+		);
+	}
+
+	// Everything else that used to live here is static and is gone: the pinned
+	// PCR0 (a compiled constant), the three upstream tuples (code-pinned), the
+	// auth line, the settings path, the roster of eleven check names, and the
+	// accepted-limits prose. None of it can change what the reader does, and all
+	// of it is in README §Trust model. The one fact from that material worth
+	// keeping is per-exchange, and it is on the verdict line above.
 	return lines.join("\n");
+}
+
+/**
+ * The keys this panel actually has. Paging is advertised only when the log
+ * overflows a page, so the ordinary case offers no scroll affordance at all.
+ */
+export function statusFooter(errorCount: number): string {
+	const keys = ["enter/esc close"];
+	if (errorCount > PAGE_SIZE) keys.push("↑/↓ error", "pgup/pgdn");
+	return keys.join(" · ");
 }
 
 /**
@@ -233,25 +341,25 @@ function selectOne(ctx: CommandContext, title: string, items: { value: string; l
  * Read-only info panel. `getBody` is re-evaluated on every render, so the panel
  * shows fresh state once an action has run.
  *
- * `onMount` runs once when the panel opens (for the fire-and-forget refreshes
- * that repaint on arrival); `onMore` toggles a fold inside the body. The footer
- * only advertises the keys that exist. There is deliberately no manual
- * refresh key: entering the panel already re-reads what it shows.
+ * `onMount` runs once when the panel opens, for the fire-and-forget refreshes
+ * that repaint on arrival. `paged` adds a cursor the arrow and page keys move;
+ * the body is handed it and the cursor is clamped on every read, so a shrinking
+ * error log can never strand the view on a page that no longer exists.
+ *
+ * There is deliberately no fold key and no manual refresh key: the status panel
+ * has no static detail left to disclose, and entering it already re-reads
+ * everything it shows.
  */
 function infoPanel(
 	ctx: CommandContext,
 	title: string,
-	getBody: (expanded: boolean) => string,
-	actions?: { onMount?: (tui: { requestRender(): void }) => void; onMore?: () => void },
+	getBody: (cursor: number) => string,
+	actions?: { onMount?: (tui: { requestRender(): void }) => void; paged?: () => number },
 ): Promise<void> {
 	return ctx.ui.custom<void>((tui, theme, _kb, done) => {
-		let expanded = false;
+		let cursor = 0;
 		actions?.onMount?.(tui);
-		const footer = (): string => {
-			const keys = ["enter/esc close"];
-			if (actions?.onMore) keys.push(expanded ? "m less" : "m more");
-			return keys.join(" · ");
-		};
+		const pageCount = (): number => Math.max(1, Math.ceil((actions?.paged?.() ?? 0) / PAGE_SIZE));
 		return {
 			render(width: number) {
 				const w = Math.max(10, width);
@@ -260,9 +368,9 @@ function infoPanel(
 				add(theme.fg("accent", "─".repeat(w)));
 				add(` ${theme.fg("accent", theme.bold(title))}`);
 				add();
-				for (const line of getBody(expanded).split("\n")) add(` ${line}`);
+				for (const line of getBody(cursor).split("\n")) add(` ${line}`);
 				add();
-				add(` ${theme.fg("text", footer())}`);
+				add(` ${theme.fg("text", statusFooter(actions?.paged?.() ?? 0))}`);
 				return lines;
 			},
 			invalidate() {},
@@ -271,10 +379,17 @@ function infoPanel(
 					done();
 					return;
 				}
-				if (actions?.onMore && (data === "m" || data === "M")) {
-					expanded = !expanded;
-					tui.requestRender();
-					return;
+				// Paging first, and only for the keys that mean something here: the
+				// clamp keeps `end` and `pageDown` from running off the end, and a
+				// single-page log keeps every key a no-op.
+				const pages = pageCount();
+				if (pages > 1) {
+					if (matchesKey(data, Key.down)) cursor = Math.min(cursor + 1, pages - 1);
+					else if (matchesKey(data, Key.up)) cursor = Math.max(cursor - 1, 0);
+					else if (matchesKey(data, Key.pageDown)) cursor = Math.min(cursor + 1, pages - 1);
+					else if (matchesKey(data, Key.pageUp)) cursor = Math.max(cursor - 1, 0);
+					else if (matchesKey(data, Key.end)) cursor = pages - 1;
+					else if (matchesKey(data, Key.home)) cursor = 0;
 				}
 				tui.requestRender();
 			},
@@ -283,30 +398,29 @@ function infoPanel(
 }
 
 /**
- * The status panel folds its trust anchors behind `m`, so the body is a thunk
- * over the fold state rather than pre-rendered text. Opening the panel always
- * re-reads the balance and the catalog and repaints on arrival, so neither
- * number is older than the visit — there is no manual refresh key to remember.
+ * Opening the panel re-reads the balance and the catalog and repaints on
+ * arrival, so neither number is older than the visit — there is no manual
+ * refresh key to remember.
  */
 function openStatus(ctx: CommandContext, deps: MenuDeps): Promise<void> {
-	// One disk read per panel open, not per render: renderStatus is pure and
-	// the fold toggle re-renders without touching disk.
+	// One disk read per panel open, not per render: renderStatus is pure.
 	const legacyKey = hasLegacyApiKey();
 	return infoPanel(
 		ctx,
 		"wokey.ai · status",
-		(expanded) =>
-			renderStatus(deps.config(), deps.stats(), deps.last(), {
+		(cursor) =>
+			renderStatus(deps.config(), deps.last(), {
 				balance: deps.balance(),
-				expanded,
 				warnings: deps.warnings(),
 				legacyKey,
+				errors: deps.errors(),
+				cursor,
 			}),
 		{
 			onMount: (t) => {
 				void Promise.all([deps.syncBalance(), refreshBestEffort(deps)]).finally(() => t.requestRender());
 			},
-			onMore: () => undefined, // presence is what binds `m`; state lives above
+			paged: () => deps.errors().length,
 		},
 	);
 }
@@ -394,7 +508,7 @@ function openModels(ctx: CommandContext, deps: MenuDeps): Promise<void> {
 const USAGE = "usage: /wokey  ·  /wokey status  ·  /wokey models   (credentials via /login wokey, /logout wokey)";
 
 const MENU = [
-	{ value: "status", label: "Status — verification counters, auth, trust anchors" },
+	{ value: "status", label: "Status — errors, latest exchange, balance" },
 	{ value: "models", label: "Models — pick lineup by vendor" },
 ] as const;
 
@@ -422,10 +536,11 @@ export async function runMenu(deps: MenuDeps, args: string[], ctx: CommandContex
 		await deps.syncBalance();
 		await refreshBestEffort(deps);
 		show(
-			renderStatus(deps.config(), deps.stats(), deps.last(), {
+			renderStatus(deps.config(), deps.last(), {
 				balance: deps.balance(),
 				warnings: deps.warnings(),
 				legacyKey: hasLegacyApiKey(),
+				errors: deps.errors(),
 			}),
 		);
 	};

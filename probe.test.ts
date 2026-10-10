@@ -19,8 +19,8 @@ import { DEFAULT_CONFIG, PUBLISHED_PCR0, resolveConfig } from "./config.ts";
 import { getRoute } from "./routes.ts";
 import { buildV2Statement, sha256 } from "./verify/signing.ts";
 import { parseTeeProofEvent } from "./verify/tee-verify-core.ts";
-import { stripTrailingProofEvent, verifyExchange } from "./verify/probe.ts";
-import type { VerificationPolicy } from "./verify/probe.ts";
+import { errorChecks, stripTrailingProofEvent, verifyExchange } from "./verify/probe.ts";
+import type { ClassifiedCheck, VerificationPolicy } from "./verify/probe.ts";
 import type { AttestationVerifier, TeeProofWire } from "./verify/tee-verify-core.ts";
 
 const VECTORS = JSON.parse(readFileSync(new URL("./test-fixtures/signing-vectors.json", import.meta.url), "utf8")) as {
@@ -85,7 +85,7 @@ function sseWithProof(proof: TeeProofWire, body = "event: response.completed\nda
 	]);
 }
 
-function findCheck(checks: { name: string; ok: boolean }[], name: string) {
+function findCheck(checks: { name: string; ok: boolean; severity?: string }[], name: string) {
 	return checks.find((c) => c.name === name);
 }
 
@@ -217,14 +217,22 @@ describe("verification gates", () => {
 		expect(report.status).toBe("failed");
 	});
 
-	it("flags an unset PCR0 anchor instead of reporting a pass", () => {
+	it("flags an unset PCR0 anchor as unchecked, not as a failed exchange", () => {
 		const proof = makeProof();
 		const { report } = verifyExchange(
 			{ extractServedModel: GPT_ROUTE.extractServedModel, wireBytes: sseWithProof(proof), attestationVerifier: stubAttestation() },
 			gptPolicy({ expectedPcr0: "" }),
 		);
-		expect(findCheck(report.checks, "Enclave image (PCR0)")?.ok).toBe(false);
-		expect(report.status).toBe("failed");
+		const check = findCheck(report.checks, "Enclave image (PCR0)");
+		expect(check?.ok).toBe(false);
+		// A local configuration weakness, not something that went wrong in this
+		// exchange: it stays visibly not-passing without turning the run red.
+		expect(check?.severity).toBe("unchecked");
+		// The stub cannot satisfy Ed25519, so the run is red for that reason alone —
+		// the unset anchor must not be among the causes.
+		const failing = report.checks.filter((c) => c.severity === "fail").map((c) => c.name);
+		expect(failing).not.toContain("Enclave image (PCR0)");
+		expect(failing).toEqual(["Response signature"]);
 	});
 
 	it("rejects a signature key the attestation does not endorse", () => {
@@ -431,7 +439,7 @@ describe("config", () => {
 	});
 });
 describe("English-only, concise, per-case reasons", () => {
-	const find = (checks: { name: string; ok: boolean; detail?: string }[], name: string) =>
+	const find = (checks: { name: string; ok: boolean; detail?: string; severity?: string }[], name: string) =>
 		checks.find((c) => c.name === name);
 	const text = (r: { checks: { name: string; detail: string }[] }) =>
 		r.checks.map((c) => `${c.name}: ${c.detail}`).join("\n");
@@ -480,6 +488,100 @@ describe("English-only, concise, per-case reasons", () => {
 		);
 		expect(find(report.checks, "Request binding")?.ok).toBe(false);
 		expect(find(report.checks, "Request binding")?.detail).toMatch(/documented gap/);
+		// Accepted, so it is never surfaced as an error — only as a disclosed limit.
+		expect(find(report.checks, "Request binding")?.severity).toBe("gap");
+	});
+});
+describe("check severity", () => {
+	const officialPolicy = (): VerificationPolicy => ({
+		expectedPcr0: resolveConfig().expectedPcr0,
+		endpoint: GPT_ROUTE.endpoint!,
+		requestBinding: GPT_ROUTE.requestBinding,
+	});
+	/**
+	 * A healthy official-route run. The attestation stub bypasses the Ed25519
+	 * half, so `Response signature` cannot pass under it — see "verifies a
+	 * well-formed exchange end to end". It is coerced here so the gap/fail split
+	 * can be asserted without that artifact; every other check is genuine.
+	 */
+	const healthy = (): ClassifiedCheck[] => {
+		const body = 'event: response.completed\ndata: {"response":{"model":"gpt-6.1-sol"}}\n\n';
+		const proof = makeProof({ response_body_sha256: createHash("sha256").update(body, "utf8").digest("hex") });
+		return verifyExchange(
+			{
+				extractServedModel: GPT_ROUTE.extractServedModel,
+				wireBytes: sseWithProof(proof, body),
+				requestBytes: Buffer.from('{"model":"gpt-6-luna"}'),
+				attestationVerifier: stubAttestation(),
+			},
+			officialPolicy(),
+		).report.checks.map((c) => (c.name === "Response signature" ? { ...c, ok: true, severity: "pass" as const } : c));
+	};
+
+	it("stamps every check, so nothing has to be re-derived from a boolean", () => {
+		const checks = healthy();
+		expect(checks.length).toBeGreaterThan(0);
+		for (const c of checks) expect(["pass", "fail", "gap", "unchecked"]).toContain(c.severity);
+	});
+
+	it("marks exactly one accepted gap on a healthy official-route run", () => {
+		const checks = healthy();
+		expect(checks.filter((c) => c.severity === "gap").map((c) => c.name)).toEqual(["Request binding"]);
+		expect(checks.filter((c) => c.severity === "fail")).toEqual([]);
+		expect(checks.filter((c) => c.severity === "unchecked")).toEqual([]);
+	});
+
+	it("drops the gap entirely when the route can bind request bytes", () => {
+		const body = 'event: response.completed\ndata: {"response":{"model":"gpt-6.1-sol"}}\n\n';
+		const requestBody = '{"model":"gpt-6-luna"}';
+		const proof = makeProof({
+			response_body_sha256: createHash("sha256").update(body, "utf8").digest("hex"),
+			request_body_sha256: createHash("sha256").update(requestBody, "utf8").digest("hex"),
+		});
+		const { report } = verifyExchange(
+			{
+				extractServedModel: GPT_ROUTE.extractServedModel,
+				wireBytes: sseWithProof(proof, body),
+				requestBytes: Buffer.from(requestBody, "utf8"),
+				attestationVerifier: stubAttestation(),
+			},
+			{ ...officialPolicy(), requestBinding: "verify" },
+		);
+		// The signature still cannot pass under the stub, so assert the gap is gone
+		// rather than that the whole run is green.
+		expect(report.checks.find((c) => c.name === "Request binding")?.severity).toBe("pass");
+		expect(report.checks.filter((c) => c.severity === "gap")).toEqual([]);
+	});
+
+	it("marks a blocked check as a failure, never a gap", () => {
+		const { report } = verifyExchange(
+			{ extractServedModel: GPT_ROUTE.extractServedModel, wireBytes: sseWithProof(makeProof({ upstream_host: "wokey.internal" })), attestationVerifier: stubAttestation() },
+			officialPolicy(),
+		);
+		expect(report.checks.find((c) => c.name === "Upstream host")?.severity).toBe("fail");
+		expect(report.status).toBe("failed");
+	});
+
+	it("marks an unverifiable-by-design route as unchecked, so it can never be an error", () => {
+		const chat = getRoute("openai-chat");
+		const wire = 'data: {"id":"chatcmpl-1","model":"glm-5.3-flash","choices":[]}\n\n';
+		const { report } = verifyExchange(
+			{ extractServedModel: chat.extractServedModel, wireBytes: Buffer.from(wire, "utf8") },
+			{ expectedPcr0: resolveConfig().expectedPcr0, endpoint: chat.endpoint, requestBinding: chat.requestBinding },
+		);
+		expect(report.checks[0]!.severity).toBe("unchecked");
+	});
+
+	it("surfaces only real failures as error checks", () => {
+		// The healthy run's single gap must never reach an error card.
+		expect(errorChecks({ status: "verified-with-gaps", checks: healthy(), bytes: 1 })).toEqual([]);
+		const broken = healthy().map((c) => (c.name === "Remote attestation" ? { ...c, ok: false, severity: "fail" as const } : c));
+		expect(errorChecks({ status: "failed", checks: broken, bytes: 1 }).map((c) => c.name)).toEqual(["Remote attestation"]);
+	});
+
+	it("falls back to ok when a report carries no severity at all", () => {
+		const legacy = { status: "failed" as const, bytes: 1, checks: [{ name: "Response signature", ok: false, detail: "boom" }] };
+		expect(errorChecks(legacy as never).map((c) => c.name)).toEqual(["Response signature"]);
 	});
 });
 

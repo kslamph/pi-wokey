@@ -24,7 +24,7 @@ import { resolveConfig, type WokeyConfig } from "./config.ts";
 import type { ProofReport, ProofStatus } from "./verify/probe.ts";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 
-type Stats = { verified: number; gapped: number; failed: number; unproven: number };
+type Stats = { attested: number; errors: number; unverifiable: number; total: number };
 type RunMode = ExtensionContext["mode"];
 
 interface Harness {
@@ -32,6 +32,8 @@ interface Harness {
 	notify: ReturnType<typeof vi.fn>;
 	stderr: string[];
 	stats(): Stats;
+	/** Newest-first error log; only real failures should ever land here. */
+	errors(): ProofReport[];
 	/** Drop the stderr spy; `afterEach` would do it, but tests read better closing their own. */
 	restore(): void;
 }
@@ -40,13 +42,24 @@ function verdict(status: ProofStatus, detail = "received bytes do not match the 
 	return {
 		routeId,
 		status,
-		checks: status === "verified" ? [{ name: "Response signature", ok: true, detail: "" }] : [{ name: "Response signature", ok: false, detail }],
+		checks:
+			status === "verified"
+				? [{ name: "Response signature", ok: true, severity: "pass", detail: "" }]
+				: [{ name: "Response signature", ok: false, severity: "fail", detail }],
 		upstreamHost: "chatgpt.com",
 		upstreamPath: "/backend-api/codex/responses",
 		reportedModel: "gpt-6-luna",
 		bytes: 1234,
 		finishedAt: 1,
 		durationMs: 42,
+	};
+}
+
+/** The documented request-binding gap: not a failure, and never an error card. */
+function gapped(): ProofReport {
+	return {
+		...verdict("verified-with-gaps"),
+		checks: [{ name: "Request binding", ok: false, severity: "gap", detail: "request body is rewritten by the relay — not checkable (documented gap)" }],
 	};
 }
 
@@ -73,10 +86,11 @@ function harness(mode: RunMode = "tui", config?: Partial<WokeyConfig>): Harness 
 	for (const fn of handlers.get("session_start") ?? []) fn({}, { mode, hasUI: mode !== "print", ui: { notify }, modelRegistry });
 	// The startup "ready" notice is informational; keep it out of the assertions.
 	notify.mockClear();
-	const exposed = (pi as unknown as { __wokey: { report(r: ProofReport): void; stats(): Stats } }).__wokey;
+	const exposed = (pi as unknown as { __wokey: { report(r: ProofReport): void; stats(): Stats; errors(): ProofReport[] } }).__wokey;
 	return {
 		report: (r) => exposed.report(r),
 		stats: () => exposed.stats(),
+		errors: () => exposed.errors(),
 		notify,
 		stderr,
 		restore: () => spy.mockRestore(),
@@ -112,42 +126,75 @@ describe("proof verdict routing", () => {
 		h.restore();
 	});
 
-	it("stays silent for verified and verified-with-gaps", () => {
+	it("treats the documented request-binding gap as attested, not as an error", () => {
 		const h = harness("tui");
 		h.report(verdict("verified"));
-		h.report(verdict("verified-with-gaps"));
+		h.report(gapped());
 		expect(h.notify).not.toHaveBeenCalled();
-		expect(h.stats()).toMatchObject({ verified: 1, gapped: 1, failed: 0, unproven: 0 });
+		expect(h.stats()).toEqual({ attested: 2, errors: 0, unverifiable: 0, total: 2 });
+		// The gap is disclosed, not hidden — and it is never an error card.
+		expect(h.errors()).toEqual([]);
 		h.restore();
 	});
 
-	it("warns once per session for unproven, but every time for failed", () => {
+	it("treats a missing proof on an official route as an error, every time", () => {
 		const h = harness("tui");
 		h.report(verdict("unproven", "no tee.proof in the response"));
 		h.report(verdict("unproven", "no tee.proof in the response"));
-		expect(h.notify).toHaveBeenCalledTimes(1);
+		// Proofs stopping is a regression of the claim, not a per-session novelty, so
+		// it is no longer deduped the way an ambiguous `unproven` used to be.
+		expect(h.notify).toHaveBeenCalledTimes(2);
 		expect((h.notify.mock.calls[0] as [string, string])[1]).toBe("warning");
-		h.report(verdict("failed"));
-		h.report(verdict("failed"));
-		expect(h.notify).toHaveBeenCalledTimes(3);
+		expect(h.stats()).toMatchObject({ errors: 2 });
+		expect(h.errors()).toHaveLength(2);
 		h.restore();
 	});
 
-	it("stays silent when notifyOnFailure is off", () => {
+	it("keeps the error log newest-first and only holds real failures", () => {
+		const h = harness("tui");
+		h.report(gapped());
+		const first = verdict("failed", "response was modified");
+		first.finishedAt = 100;
+		const second = verdict("failed", "nonce did not match");
+		second.finishedAt = 200;
+		h.report(first);
+		h.report(second);
+		expect(h.errors().map((r) => r.finishedAt)).toEqual([200, 100]);
+		h.restore();
+	});
+
+	it("stays silent when notifyOnFailure is off, but still logs the error", () => {
 		const h = harness("tui", { notifyOnFailure: false });
 		h.report(verdict("failed"));
 		expect(h.notify).not.toHaveBeenCalled();
 		expect(h.stderr).toEqual([]);
+		expect(h.errors()).toHaveLength(1);
 		h.restore();
 	});
 
-	it("never warns for unverified chat-completions routes, but still counts them", () => {
+	it("never warns for unverified chat-completions routes, and never counts them attested", () => {
 		const h = harness("tui");
 		h.report(verdict("unproven", "verification covers Claude + GPT routes only", "openai-chat"));
 		h.report(verdict("unproven", "verification covers Claude + GPT routes only", "openai-chat"));
 		expect(h.notify).not.toHaveBeenCalled();
 		expect(h.stderr).toEqual([]);
-		expect(h.stats()).toMatchObject({ unproven: 2 });
+		// Unverifiable, not verified: inflating the green count with exchanges that
+		// carry no attestation at all is the one thing this panel must never do.
+		expect(h.stats()).toEqual({ attested: 0, errors: 0, unverifiable: 2, total: 2 });
+		expect(h.errors()).toEqual([]);
+		h.restore();
+	});
+
+	it("keeps every exchange in exactly one bucket", () => {
+		const h = harness("tui");
+		h.report(verdict("verified"));
+		h.report(gapped());
+		h.report(verdict("failed"));
+		h.report(verdict("unproven", "no tee.proof in the response"));
+		h.report(verdict("unproven", "verification covers Claude + GPT routes only", "openai-chat"));
+		const s = h.stats();
+		expect(s.attested + s.errors + s.unverifiable).toBe(s.total);
+		expect(s.total).toBe(5);
 		h.restore();
 	});
 });

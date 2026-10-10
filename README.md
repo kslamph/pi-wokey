@@ -9,7 +9,7 @@ checks every response against wokey's TEE proof and tells you when a reply canno
 |---|---|---|
 | `index.ts` | provider `wokey` | Registers the wokey lineup with pi. Routing, thinking levels, prompt caching and usage accounting run through pi's native adapters. |
 | `index.ts` | `/wokey` | Management menu (status, models). |
-| `index.ts` | `/wokey status` | Verified / gaps / failed / unattested counters, account balance, auth state, and the last exchange with every individual check. |
+| `index.ts` | `/wokey status` | Only changing or attention-worthy information: timestamped cards for failed exchanges (paged when there are more than three), the latest exchange summary, account balance, and conditional verification warnings. |
 | `index.ts` | `/wokey models` | Picks which models are registered with pi. Vendor tabs, rates, context window and thinking levels per row. |
 | `index.ts` | `session_start` hook | Reports readiness and refreshes the model catalog from wokey. |
 
@@ -47,10 +47,10 @@ After installing, store your wokey API key and pick a model:
 Ask for anything you normally would. Verification runs on every response and stays quiet
 unless something is wrong.
 
-![wokey.ai panels: model selector with vendor tabs, status with verified and failed verdicts](docs/wokey-demo.gif)
+![wokey.ai panels: model selector with vendor tabs, status with a clean session, a failed verification, and a paged error log](docs/wokey-demo.gif)
 
 ```text
-/wokey status       # what has been verified this session, and your balance
+/wokey status       # any verification errors this session, and your balance
 /wokey models       # add or remove models
 ```
 
@@ -98,8 +98,13 @@ in normal use.
 - **Permissions.** Like any pi extension it runs in-process with your user's OS permissions.
 - **What a green verdict means.** An enclave running the pinned image fetched these exact
   bytes from a genuine upstream TLS endpoint. It cannot prove that OpenAI or Anthropic
-  served the model you asked for, because neither signs its responses. `/wokey status`
-  shows the checks behind every verdict, and `m` folds out the pinned trust anchors.
+  served the model you asked for, because neither signs its responses.
+- **What `/wokey status` shows.** Only what is new: a card for every exchange that
+  failed verification (paged past three), the last exchange's model, size, latency and
+  verdict, and your balance. Pinned trust anchors, the measured upstream tuples, the
+  accepted limits and the full check roster are static, so they are documented here
+  rather than reprinted on every open. Two conditions are worth watching and are shown
+  inline when they occur: `verification is OFF`, and `no audit PCR0 is pinned`.
 
 ## Update, remove, disable
 

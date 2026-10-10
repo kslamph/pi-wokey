@@ -33,10 +33,28 @@ import type { WokeyRoute, WokeyRouteId } from "../routes.ts";
 
 export type ProofStatus = "verified" | "verified-with-gaps" | "unproven" | "failed";
 
+/**
+ * How each check relates to the verdict, so nothing has to be re-derived from a
+ * boolean at display time.
+ *
+ * - `pass` / `fail`: a real result. `fail` on a blocking check means the
+ *   exchange did not verify.
+ * - `gap`: structurally unreachable and *accepted* (the relay rewrites the
+ *   request body, so byte-exact request binding cannot be checked). Folded into
+ *   the verdict, never shown as an error.
+ * - `unchecked`: could not be checked because of local configuration (no audit
+ *   PCR0 pinned). Not the exchange's fault and not an error, but it shrinks the
+ *   claim, so the panel says so in its own standing warning.
+ */
+export type CheckSeverity = "pass" | "fail" | "gap" | "unchecked";
+
+/** A check plus its severity. `ok` stays the raw boolean the verifier produced. */
+export type ClassifiedCheck = TeeCheck & { severity: CheckSeverity };
+
 export interface ProofVerdict {
 	/** `verified-with-gaps` = every achievable check passed, but N are structurally unavailable. */
 	status: ProofStatus;
-	checks: TeeCheck[];
+	checks: ClassifiedCheck[];
 	upstreamHost?: string;
 	upstreamPath?: string;
 	/** Signed HTTP method, so the status panel can render the exact signed tuple. */
@@ -234,24 +252,28 @@ export interface VerifyInput {
 }
 
 /** Map the vendored verifier's check names/reasons to concise English. */
-function renameCheck(c: TeeCheck): TeeCheck {
+function renameCheck(c: TeeCheck): ClassifiedCheck {
+	const pass = (name: string, detail: string): ClassifiedCheck => ({ name, ok: true, detail, severity: "pass" });
+	const fail = (name: string, detail: string): ClassifiedCheck => ({ name, ok: false, detail, severity: "fail" });
 	switch (c.name) {
 		case "远程证明":
-			return { ...c, name: "Remote attestation", detail: c.ok ? "COSE/P-384 chains to the AWS Nitro root" : shortReason(c.detail) };
+			return c.ok ? pass("Remote attestation", "COSE/P-384 chains to the AWS Nitro root") : fail("Remote attestation", shortReason(c.detail));
 		case "证书有效期":
-			return { ...c, name: "Certificate validity", detail: c.ok ? "attestation certificate in date" : "attestation certificate expired — stale proof" };
+			return c.ok ? pass("Certificate validity", "attestation certificate in date") : fail("Certificate validity", "attestation certificate expired — stale proof");
 		case "PCR0 比对":
-			return { ...c, name: "Enclave image (PCR0)", detail: c.ok ? "matches the pinned audited image" : shortReason(c.detail) };
+			return c.ok ? pass("Enclave image (PCR0)", "matches the pinned audited image") : fail("Enclave image (PCR0)", shortReason(c.detail));
 		case "公钥绑定":
-			return { ...c, name: "Signing key binding", detail: c.ok ? "response signer is the attested enclave" : "response signer is not the key this enclave attested" };
+			return c.ok ? pass("Signing key binding", "response signer is the attested enclave") : fail("Signing key binding", "response signer is not the key this enclave attested");
 		case "nonce 绑定":
-			return { ...c, name: "Nonce binding", detail: c.ok ? "proof nonce matches the attestation" : "proof nonce does not match the attestation — spliced or forged proof" };
+			return c.ok ? pass("Nonce binding", "proof nonce matches the attestation") : fail("Nonce binding", "proof nonce does not match the attestation — spliced or forged proof");
 		case "响应签名":
-			return { ...c, name: "Response signature", detail: c.ok ? "signature verifies and response bytes are unaltered" : c.detail.includes("哈希") ? "received bytes do not match the signed hash — response was modified" : "signature does not verify — statement or signature was altered" };
+			return c.ok
+				? pass("Response signature", "signature verifies and response bytes are unaltered")
+				: fail("Response signature", c.detail.includes("哈希") ? "received bytes do not match the signed hash — response was modified" : "signature does not verify — statement or signature was altered");
 		case "请求绑定":
-			return { ...c, name: "Request binding", detail: c.ok ? "sent request bytes match the signed digest" : "request bytes differ from the signed digest" };
+			return c.ok ? pass("Request binding", "sent request bytes match the signed digest") : fail("Request binding", "request bytes differ from the signed digest");
 		default:
-			return { name: c.name, ok: c.ok, detail: c.detail };
+			return { name: c.name, ok: c.ok, detail: c.detail, severity: c.ok ? "pass" : "fail" };
 	}
 }
 
@@ -273,7 +295,7 @@ export function verifyExchange(input: VerifyInput, policy: VerificationPolicy): 
 			report: {
 				status: "unproven",
 				checks: [
-					{ name: "Proof present", ok: false, detail: "verification covers Claude + GPT routes only — Wokey ships no proof for this form" },
+					{ name: "Proof present", ok: false, severity: "unchecked", detail: "verification covers Claude + GPT routes only — Wokey ships no proof for this form" },
 				],
 				reportedModel: input.extractServedModel(parsed.body),
 				bytes: (input.clientBytes ?? parsed.body).length,
@@ -288,7 +310,7 @@ export function verifyExchange(input: VerifyInput, policy: VerificationPolicy): 
 			report: {
 				status: "unproven",
 				checks: [
-					{ name: "Proof present", ok: false, detail: "no tee.proof in the response — nothing was attested" },
+					{ name: "Proof present", ok: false, severity: "fail", detail: "no tee.proof in the response — nothing was attested" },
 				],
 				bytes: input.wireBytes.length,
 			},
@@ -330,26 +352,32 @@ export function verifyExchange(input: VerifyInput, policy: VerificationPolicy): 
 	// Upstream host: the signed name must be the policy's measured host, exactly.
 	const gotHost = String(proof.upstream_host ?? "");
 	const hostOk = gotHost === policy.endpoint.host;
-	const hostCheck: TeeCheck = {
+	const hostCheck: ClassifiedCheck = {
 		name: "Upstream host",
 		ok: hostOk,
+		severity: hostOk ? "pass" : "fail",
 		detail: hostOk ? `signed upstream = ${gotHost}` : `served from ${gotHost || "(none)"} — not the official endpoint`,
 	};
 	const hostIdx = checks.findIndex((c) => c.name === "Signing key binding");
 	checks.splice(hostIdx < 0 ? 0 : hostIdx, 0, hostCheck);
 
-	// An unset anchor means "no opinion", not "pass". Never let a green run imply a
-	// PCR0 comparison happened when it did not.
+	// An unset anchor means "no opinion", not "pass" — and not a failed exchange
+	// either. It is a local configuration weakness: the check stays visibly
+	// not-passing, but it is excluded from `blocking` so it can neither turn an
+	// exchange red nor inflate the error count. The panel raises it as a standing
+	// warning instead. Never let a green run imply a PCR0 comparison happened
+	// when it did not.
 	if (!policy.expectedPcr0) {
 		const i = checks.findIndex((c) => c.name === "Enclave image (PCR0)");
-		if (i >= 0) checks[i] = { name: checks[i]!.name, ok: false, detail: "no audit PCR0 pinned — image substitution not checked" };
+		if (i >= 0) checks[i] = { name: checks[i]!.name, ok: false, severity: "unchecked", detail: "no audit PCR0 pinned — image substitution not checked" };
 	}
 
-	// The relay rewrites the request body, so byte-exact binding is unreachable. This is
-	// a documented gap, not a failure: it must never raise a warning. See README.
+	// The relay rewrites the request body, so byte-exact binding is unreachable.
+	// This is a documented gap, not a failure: it must never raise a warning.
+	// See README.
 	if (policy.requestBinding === "unavailable") {
 		const i = checks.findIndex((c) => c.name === "Request binding");
-		if (i >= 0) checks[i] = { name: checks[i]!.name, ok: false, detail: "request body is rewritten by the relay — not checkable (documented gap)" };
+		if (i >= 0) checks[i] = { name: checks[i]!.name, ok: false, severity: "gap", detail: "request body is rewritten by the relay — not checkable (documented gap)" };
 	}
 
 	// Path and method join the host as one exact tuple: no suffixes, no mixes.
@@ -358,6 +386,7 @@ export function verifyExchange(input: VerifyInput, policy: VerificationPolicy): 
 	checks.push({
 		name: "Upstream path",
 		ok: pathOk,
+		severity: pathOk ? "pass" : "fail",
 		detail: pathOk ? path : `unexpected path ${path} — not a known wokey route`,
 	});
 
@@ -367,6 +396,7 @@ export function verifyExchange(input: VerifyInput, policy: VerificationPolicy): 
 	checks.push({
 		name: "Upstream method",
 		ok: methodOk,
+		severity: methodOk ? "pass" : "fail",
 		detail: methodOk ? gotMethod : `unexpected method ${gotMethod || "(none)"} — expected ${policy.endpoint.method}`,
 	});
 
@@ -380,11 +410,15 @@ export function verifyExchange(input: VerifyInput, policy: VerificationPolicy): 
 		checks.push({
 			name: "Served model",
 			ok: matches,
+			severity: matches ? "pass" : "fail",
 			detail: matches ? (served ?? "unknown") : `served "${served}" but "${want}" was requested — model substitution`,
 		});
 	}
 
-	const blocking = checks.filter((c) => c.name !== "Request binding" || policy.requestBinding === "verify");
+	// Only real results decide the verdict. `gap` is an accepted structural limit
+	// and `unchecked` is a local configuration weakness; neither is evidence that
+	// anything went wrong in this exchange.
+	const blocking = checks.filter((c) => c.severity === "pass" || c.severity === "fail");
 	const blockingFailed = blocking.some((c) => !c.ok);
 	const gaps = checks.length - blocking.length;
 	const status: ProofStatus = blockingFailed ? "failed" : gaps > 0 ? "verified-with-gaps" : "verified";
@@ -403,7 +437,52 @@ export function verifyExchange(input: VerifyInput, policy: VerificationPolicy): 
 	};
 }
 
+/**
+ * The checks an error card should show: real failures only.
+ *
+ * `severity` is authoritative when present. Reports assembled without it — a
+ * test fixture, or any caller holding a bare `TeeCheck` — fall back to `ok`,
+ * which is the best signal available and errs toward showing the check.
+ */
+export function errorChecks(report: ProofVerdict): ClassifiedCheck[] {
+	return report.checks.filter((c) => (c.severity ? c.severity === "fail" : !c.ok));
+}
+
 // ── the fetch wrapper ──────────────────────────────────────────────────────────
+
+/**
+ * What the transport actually went wrong with, in the user's words.
+ *
+ * A `reason` is the *cause*; the check detail derived from empty or proof-less
+ * bytes is a *symptom* that reads like a verdict on wokey. The cause always
+ * wins, so a fault in our own reader can never be presented as an unattested
+ * answer.
+ */
+const REASON_VOICE: Record<string, ClassifiedCheck> = {
+	"no tee.proof event in stream": {
+		name: "Proof missing",
+		ok: false,
+		severity: "fail",
+		detail: "no proof event in the response stream — wokey did not attest this answer",
+	},
+	"could not read response for verification": {
+		name: "Verifier error",
+		ok: false,
+		severity: "fail",
+		detail: "the response could not be read for verification",
+	},
+};
+
+/**
+ * Replace the derived synthetic check with the named cause. Only applied to the
+ * single-check reports `verifyExchange` produces when it had no proof to work
+ * with — a real multi-check verdict keeps all of its evidence.
+ */
+function applyReason(report: ProofVerdict, reason: string): ProofVerdict {
+	const voice = REASON_VOICE[reason];
+	if (!voice || report.checks.length !== 1) return report;
+	return { ...report, checks: [voice] };
+}
 
 type FetchArg = Parameters<typeof globalThis.fetch>[0];
 type FetchInit = Parameters<typeof globalThis.fetch>[1];
@@ -433,10 +512,13 @@ export function createProbingFetch(deps: ProbeDeps): typeof globalThis.fetch {
 						},
 						deps.policy,
 					).report;
+					if (reason) report = applyReason(report, reason);
 				} catch (error) {
+					// The verifier itself threw. Name it in English and in our own
+					// voice: this is a fault here, not a verdict on wokey.
 					report = {
 						status: "failed",
-						checks: [{ name: "自证校验", ok: false, detail: `校验异常:${error instanceof Error ? error.message : String(error)}` }],
+						checks: [{ name: "Verifier error", ok: false, severity: "fail", detail: `verification could not complete: ${error instanceof Error ? error.message : String(error)}` }],
 						bytes: clientBytes.length,
 					};
 				}

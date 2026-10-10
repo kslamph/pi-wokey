@@ -102,20 +102,18 @@ describe("config", () => {
 });
 
 describe("/wokey renderer", () => {
-	it("shows counters, masked key, balance, and both trust anchors once expanded", async () => {
+	it("shows a live status panel with the balance, and no static detail", async () => {
 		const { renderStatus } = await import("./tui.ts");
-		const text = renderStatus(
-			resolveConfig(),
-			{ verified: 3, gapped: 1, failed: 0, unproven: 0 },
-			undefined,
-			{ balance: { availableUsd: 10.787384, reservedUsd: 0 }, expanded: true },
-		);
-		expect(text).toContain("wokey.ai ·");
-		expect(text).toContain("auth      pi-managed — /login wokey");
+		const text = renderStatus(resolveConfig(), undefined, {
+			balance: { availableUsd: 10.787384, reservedUsd: 0 },
+		});
 		expect(text).toContain("$10.79"); // live balance, cents always shown
-		expect(text).toContain("437cbab8c2e5dd11");
-		expect(text).toContain("chatgpt.com");
-		expect(text).toContain("No response verified yet");
+		expect(text).toContain("no exchange yet this session");
+		// Trust anchors, settings paths and the accepted-limit prose are static:
+		// documentation belongs in the README, not in a panel opened every turn.
+		expect(text).not.toContain("437cbab8c2e5dd11");
+		expect(text).not.toContain("pinned");
+		expect(text).not.toContain("settings");
 	});
 
 	it("lists the active lineup with prices and per-model thinking levels", async () => {
