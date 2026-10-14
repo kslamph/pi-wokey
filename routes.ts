@@ -66,6 +66,24 @@ export interface WokeyRoute {
 }
 
 /**
+ * Whether the payload already carries a leading instruction of its own.
+ *
+ * pi's Responses adapter sends the system prompt as the first `input` item with
+ * role `developer` (`openai-responses-shared.js`, `instructionRole`), never as
+ * `instructions`, so "does the caller have a prompt" is a question about
+ * `input[0]`, not about `instructions`.
+ */
+function hasLeadingInstruction(body: Record<string, unknown>): boolean {
+	if (typeof body.instructions === "string" && body.instructions !== "") return true;
+	const input = body.input;
+	if (!Array.isArray(input)) return false; // a bare string input carries no system prompt
+	const first = input[0];
+	if (!first || typeof first !== "object" || Array.isArray(first)) return false;
+	const role = (first as { role?: unknown }).role;
+	return role === "developer" || role === "system";
+}
+
+/**
  * Shape the payload into the Codex Responses envelope. Only fills gaps —
  * anything pi already set (notably `reasoning`) is left untouched, so the
  * thinking level the user chose is never overwritten here.
@@ -74,8 +92,13 @@ export function applyCodexEnvelope(payload: unknown, cacheKey: string): Record<s
 	if (!payload || typeof payload !== "object" || Array.isArray(payload)) return {};
 	const body = { ...(payload as Record<string, unknown>) };
 	body.store = false; // the Codex backend rejects store:true outright
+	// The Codex backend tolerates a request with no `instructions` (measured: the
+	// same body without it returns 200 on both wokey and OpenAI), so this default
+	// exists to satisfy the shape, not to add content. Send it only when the caller
+	// really sent no prompt — otherwise it lands in the transcript as a second,
+	// generic system instruction immediately ahead of the real one.
 	if (typeof body.instructions !== "string" || body.instructions === "") {
-		body.instructions = "You are a helpful assistant.";
+		if (!hasLeadingInstruction(body)) body.instructions = "You are a helpful assistant.";
 	}
 	if (!body.text || typeof body.text !== "object") body.text = { verbosity: "low" };
 	if (!Array.isArray(body.include)) body.include = ["reasoning.encrypted_content"];

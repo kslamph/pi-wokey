@@ -32,6 +32,7 @@ import {
 import type { WokeyConfig } from "./config.ts";
 import { livePricingFor } from "./models.ts";
 import { type WokeyRoute } from "./routes.ts";
+import { createEmptyCompletionGuardFetch } from "./resilience.ts";
 /** Kept here so existing imports keep working; the implementation lives on the route. */
 export { applyCodexEnvelope } from "./routes.ts";
 import { createProbingFetch, type ProofReport } from "./verify/probe.ts";
@@ -62,6 +63,7 @@ function buildRoutedOptions<T extends StreamOptions>(
 	route: WokeyRoute,
 	config: WokeyConfig,
 	onReport: (report: ProofReport) => void,
+	onNotice: ((message: string) => void) | undefined,
 	model: Model<Api>,
 	options: T | undefined,
 ): T {
@@ -89,19 +91,27 @@ function buildRoutedOptions<T extends StreamOptions>(
 		// provider, so whatever it supplies passes through untouched and this
 		// extension never reads a second key store.
 		headers: routedHeaders,
-		// The probe verifies against this route's policy. When verification is off
-		// there is nothing to wrap, so pi (or the caller) supplies the transport.
-		...(config.verify
-			? {
-					fetch: createProbingFetch({
+		// The transport is always ours. Verification wraps the real fetch when it is
+		// on, and the empty-completion guard wraps whatever that produced: a turn
+		// wokey completes with no output and zero billed tokens is retried once and,
+		// failing that, reported — otherwise pi-ai reads it as a finished but empty
+		// turn and the session looks hung.
+		fetch: createEmptyCompletionGuardFetch(
+			config.verify
+				? createProbingFetch({
 						routeId: route.id,
 						policy: { expectedPcr0: config.expectedPcr0, endpoint: route.endpoint, requestBinding: route.requestBinding },
 						onReport,
 						expectedModel: model.id,
 						extractServedModel: route.extractServedModel,
-					}),
-				}
-			: {}),
+					})
+				: (options?.fetch ?? globalThis.fetch.bind(globalThis)),
+			{
+				// A retry that works is still a relay fault, so it is said out loud
+				// rather than healing silently.
+				onRetry: ({ attempt }) => onNotice?.(`wokey: the relay completed an empty turn (no output, nothing billed) — retried as attempt ${attempt}`),
+			},
+		),
 		// Chain rather than replace, so another extension's instrumentation still runs.
 		onPayload: async (payload: unknown, m: Model<Api>) => {
 			const replaced = upstream ? await upstream(payload, m) : undefined;
@@ -167,6 +177,7 @@ export function createVerifiedStreams(
 	config: WokeyConfig,
 	onReport: (report: ProofReport) => void,
 	native: ProviderStreams,
+	onNotice?: (message: string) => void,
 ): ProviderStreams {
 	const checkApi = (model: Model<Api>): void => {
 		if (model.api !== route.api) {
@@ -177,12 +188,12 @@ export function createVerifiedStreams(
 		stream(model: Model<Api>, context: TranscriptContext, options?: StreamOptions): AssistantMessageEventStream {
 			checkApi(model);
 			const priced = withLivePricing(model);
-			return native.stream(priced, context, buildRoutedOptions(route, config, onReport, priced, options));
+			return native.stream(priced, context, buildRoutedOptions(route, config, onReport, onNotice, priced, options));
 		},
 		streamSimple(model: Model<Api>, context: TranscriptContext, options?: SimpleStreamOptions): AssistantMessageEventStream {
 			checkApi(model);
 			const priced = withLivePricing(model);
-			return native.streamSimple(priced, context, buildRoutedOptions(route, config, onReport, priced, options));
+			return native.streamSimple(priced, context, buildRoutedOptions(route, config, onReport, onNotice, priced, options));
 		},
 		...(native.fetchDeferred
 			? {

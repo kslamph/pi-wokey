@@ -117,6 +117,14 @@ pi config                     # enable or disable the package's resources
 
 ## Compatibility
 
+- **Voided turns.** If the relay closes a Responses turn with no output items and
+  nothing billed — the shape wokey returns for a request whose replayed
+  `function_call` has no matching `function_call_output` — the extension retries it
+  once and, if that is empty too, surfaces the failure instead of leaving a silent
+  stall in the session. Retries are announced; the guard never runs on the
+  Anthropic route, where nothing comparable has been observed.
+- **Your prompt, not a generic one.** Pi sends its system prompt as the leading
+  `input` item, so no default `instructions` string is added alongside it.
 - Pi 1.0.2. `@earendil-works/pi-ai`, `@earendil-works/pi-coding-agent` and
   `@earendil-works/pi-tui` are supplied by pi (`peerDependencies`), not bundled.
 - Node.js 22 or newer (`engines` in `package.json`).

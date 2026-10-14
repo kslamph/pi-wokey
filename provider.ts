@@ -35,6 +35,8 @@ export const PROVIDER_NAME = "wokey.ai";
 export interface WokeyProviderOptions {
 	config: WokeyConfig;
 	onReport(report: ProofReport): void;
+	/** One-line notices the user should see (a self-healed relay fault, say). */
+	onNotice?(message: string): void;
 }
 
 /** Live catalog endpoint, served by the GPT route's relay root. */
@@ -82,7 +84,7 @@ export async function refreshWokeyModels(context: RefreshModelsContext): Promise
 }
 
 export function createWokeyProvider(options: WokeyProviderOptions): Provider<WokeyApi> {
-	const { config, onReport } = options;
+	const { config, onReport, onNotice } = options;
 	return createProvider({
 		id: PROVIDER_ID,
 		name: PROVIDER_NAME,

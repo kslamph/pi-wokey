@@ -131,7 +131,7 @@ export default function wokeyProvider(pi: ExtensionAPI, config: WokeyConfig = re
 	// One native provider for both routes. Auth, model dispatch, and catalog
 	// refresh all live inside it; pi owns the credential store and the refresh
 	// lifecycle, so there is no unregister/re-register sync here.
-	const provider = createWokeyProvider({ config, onReport });
+	const provider = createWokeyProvider({ config, onReport, onNotice: (message) => notify(message, "warning") });
 	pi.registerProvider(provider);
 
 	pi.registerCommand("wokey", {

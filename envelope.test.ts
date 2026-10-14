@@ -28,6 +28,23 @@ describe("codex envelope", () => {
 		expect(out.reasoning).toEqual({ effort: "high", summary: "auto" });
 	});
 
+	// pi sends its system prompt as the first `input` item with role `developer`
+	// and never sets `instructions` (pi-ai openai-responses-shared.js), so the
+	// default would otherwise land as a second, generic system instruction
+	// immediately ahead of the real one on every single turn.
+	it("adds no generic instruction when the payload already leads with one", () => {
+		for (const role of ["developer", "system"]) {
+			const out = applyCodexEnvelope({ ...base, input: [{ role, content: "pi's prompt" }, { role: "user", content: "hi" }] }, "ck");
+			expect(out.instructions).toBeUndefined();
+			expect(JSON.stringify(out.input)).toContain("pi's prompt");
+		}
+	});
+
+	it("still fills the default when the leading input item is not an instruction", () => {
+		const out = applyCodexEnvelope({ ...base, input: [{ role: "user", content: "hi" }] }, "ck");
+		expect(out.instructions).toBe("You are a helpful assistant.");
+	});
+
 	it("does not clobber caller-supplied values it is only meant to default", () => {
 		const out = applyCodexEnvelope({ ...base, instructions: "custom", text: { verbosity: "high" }, tool_choice: "none" }, "ck");
 		expect(out.instructions).toBe("custom");

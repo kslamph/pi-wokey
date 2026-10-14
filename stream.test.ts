@@ -157,11 +157,79 @@ describe("createVerifiedStreams (GPT route)", () => {
 		expect(native.streamSimple).not.toHaveBeenCalled();
 	});
 
-	it("leaves the caller fetch alone when verification is off", () => {
-		const callerFetch = (async () => new Response()) as never;
+	// The transport is the extension's on both counts now, so the guard can catch a
+	// voided turn whether or not verification is on. What verification being off
+	// still means: the caller's own fetch is the transport underneath it.
+	it("keeps the caller fetch as the transport when verification is off", async () => {
+		const callerFetch = vi.fn(async () => new Response("hi", { status: 200 })) as never;
 		const native = mockNative();
 		createVerifiedStreams(getRoute("openai-codex"), resolveConfig({ verify: false }), () => {}, native as never).streamSimple(model, context, { fetch: callerFetch });
-		expect(nativeOptions(native, "streamSimple").fetch).toBe(callerFetch);
+
+		const installed = nativeOptions(native, "streamSimple").fetch;
+		expect(installed).not.toBe(callerFetch);
+		await (installed as unknown as typeof globalThis.fetch)("https://api.wokey.ai/v1/other", { method: "POST" });
+		expect(callerFetch).toHaveBeenCalledOnce();
+	});
+
+	it("says out loud when it retried an empty turn", async () => {
+		const emptyTurn = () =>
+			new Response(
+				new ReadableStream<Uint8Array>({
+					start(controller) {
+						controller.enqueue(new TextEncoder().encode('event: response.created\ndata: {"type":"response.created"}\n\n'));
+						controller.enqueue(
+							new TextEncoder().encode(
+								'event: response.completed\ndata: {"type":"response.completed","response":{"output":[],"usage":{"total_tokens":0}}}\n\n',
+							),
+						);
+						controller.close();
+					},
+				}),
+				{ status: 200, headers: { "content-type": "text/event-stream" } },
+			);
+		const callerFetch = vi.fn(async () => emptyTurn()) as never;
+		const onNotice = vi.fn();
+		const native = mockNative();
+		createVerifiedStreams(getRoute("openai-codex"), resolveConfig({ verify: false }), () => {}, native as never, onNotice).streamSimple(
+			model,
+			context,
+			{ fetch: callerFetch },
+		);
+
+		const installed = nativeOptions(native, "streamSimple").fetch as unknown as typeof globalThis.fetch;
+		await (await installed("https://api.wokey.ai/v1/responses", { method: "POST" })).text();
+
+		expect(onNotice).toHaveBeenCalledOnce();
+		expect(onNotice.mock.calls[0]![0]).toMatch(/empty turn/i);
+	});
+
+	it("guards the Responses route even when verification is off", async () => {
+		const emptyStream = () =>
+			new Response(
+				new ReadableStream<Uint8Array>({
+					start(controller) {
+						controller.enqueue(new TextEncoder().encode('event: response.created\ndata: {"type":"response.created"}\n\n'));
+						controller.enqueue(
+							new TextEncoder().encode(
+								'event: response.completed\ndata: {"type":"response.completed","response":{"output":[],"usage":{"total_tokens":0}}}\n\n',
+							),
+						);
+						controller.close();
+					},
+				}),
+				{ status: 200, headers: { "content-type": "text/event-stream" } },
+			);
+		const callerFetch = vi.fn(async () => emptyStream()) as never;
+		const native = mockNative();
+		createVerifiedStreams(getRoute("openai-codex"), resolveConfig({ verify: false }), () => {}, native as never).streamSimple(model, context, { fetch: callerFetch });
+
+		const installed = nativeOptions(native, "streamSimple").fetch as unknown as typeof globalThis.fetch;
+		const response = await installed("https://api.wokey.ai/v1/responses", { method: "POST" });
+
+		// The retry is lazy — it happens while the client drains the body, since only
+		// then is it known that the attempt was empty. Read first, then count.
+		expect(await response.text()).toContain("event: error");
+		expect(callerFetch).toHaveBeenCalledTimes(2);
 	});
 });
 
