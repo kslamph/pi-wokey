@@ -78,7 +78,31 @@ export interface WokeyAnthropicSpec extends WokeyModelBase {
 	/**
 	 * pi thinking-level map, borrowed from pi's own native-anthropic metadata
 	 * for the same id. Absent means pi's default (all levels) — that is what
-	 * pi's own entry carries for Haiku 4.5 and Sonnet 4.5, so borrowed as-is.
+	 * pi's own entry carries for Haiku 4.5 and Sonnet 4.5, so borrowed as-is:
+	 * both are budget-based, and pi turns these levels into thinking budgets
+	 * rather than effort strings, so they are pi's ladder to shape, not
+	 * Anthropic's to mirror.
+	 *
+	 * The maps are *sparse on purpose*, and that is the whole trick: pi hides a
+	 * level only where the map says `null`, so an absent key means "supported"
+	 * (pi-ai `models.js:getSupportedThinkingLevels`). Filling the gaps of a
+	 * sparse map with `null` therefore deletes levels — which is exactly how the
+	 * adaptive-thinking rows once ended up offering `xhigh`/`max` only.
+	 * `xhigh`/`max` are the exception: pi treats those two as opt-in, so they
+	 * only appear when named.
+	 *
+	 * Effort ladders (models.dev `anthropic`, 2026-10-17), all of them with no
+	 * `minimal` — Anthropic has no minimal effort:
+	 *
+	 *   Opus 5.5 / 5 / 4.8 / 4.7, Sonnet 5.5 / 5, Fable 5.1 / 5 → low…max
+	 *   Opus 4.6, Sonnet 4.6                                  → low…high + max
+	 *
+	 * `off` is stated on every row except the four whose pi entry nulls it:
+	 * Opus 5.5, Opus 5 and Fable 5.1 are managed-effort (`supportsMidConvoEffort`,
+	 * so pi always sends `output_config.effort` and the level is unreachable)
+	 * and Fable 5 agrees with its own catalog. Everywhere else thinking can be
+	 * turned off, which is why those rows leave the key out rather than
+	 * nulling it.
 	 */
 	thinkingLevelMap?: ThinkingLevelMap;
 	/**
@@ -97,8 +121,14 @@ export interface WokeyCompletionsSpec extends WokeyModelBase {
 	inputModalities?: ("text" | "image")[];
 	/**
 	 * pi thinking-level map, borrowed from pi's own built-in provider for the
-	 * same model family (zai / opencode-go / opencode entries) — assumed correct
-	 * unless live use proves otherwise. Absent means pi's default (all levels).
+	 * same model family (zai / opencode-go / opencode entries) and cross-checked
+	 * against models.dev on 2026-10-17. Sparse like the Anthropic maps above:
+	 * an absent key means the level is supported, `null` hides it.
+	 * Ladders: GLM-5.3 / 5.3-Flash → low, high, max (no medium); DeepSeek V4
+	 * Flash and V4.1 Flash → low, high, max with `off` available (DeepSeek
+	 * thinks on a toggle); DeepSeek V4 Pro → high, max with `off` available;
+	 * MiniMax M3 → toggle only, so `off` plus one thinking level and nothing
+	 * else.
 	 */
 	thinkingLevelMap?: ThinkingLevelMap;
 	/** OpenAI-completions compat, borrowed the same way (thinkingFormat included). */
@@ -213,20 +243,37 @@ export const COMPLETIONS_MODELS: WokeyCompletionsSpec[] = [
 		id: "MiniMax-M3", name: "MiniMax M3", route: "openai-chat", vendor: "MiniMax",
 		input: 0.09, output: 0.36, cacheRead: 0.018, cacheWrite: 0, contextWindow: 1_000_000, maxTokens: 80_000,
 		inputModalities: ["text"],
+		// M3 thinks, but it has no effort vocabulary: models.dev's `minimax` and
+		// `minimax-cn` entries both say reasoning_options [{type:"toggle"}], and
+		// pi's own M3 entries carry no map either. Two states, so the picker gets
+		// two: `off`, plus one thinking level (`high`, the level pi treats as the
+		// default for a model with no ladder). Without this, `toModel` omits the
+		// key entirely and pi falls back to its default five levels — minimal,
+		// low and medium included — none of which MiniMax can honour.
+		thinkingLevelMap: { minimal: null, low: null, medium: null, high: "high", xhigh: null, max: null },
 		compat: { supportsStore: false, supportsDeveloperRole: false, supportsStrictMode: true, maxTokensField: "max_tokens" },
 	},
 	{
 		id: "deepseek-v4-flash", name: "DeepSeek V4 Flash", route: "openai-chat", vendor: "DeepSeek",
 		input: 0.112, output: 0.448, cacheRead: 0.00224, cacheWrite: 0, contextWindow: 1_000_000, maxTokens: 384_000,
 		inputModalities: ["text"],
-		thinkingLevelMap: { off: null, minimal: null, low: "low", medium: null, high: "high", xhigh: null, max: "max" },
+		// `off` is left unstated on purpose: DeepSeek thinks on a toggle
+		// (models.dev `deepseek`: reasoning_options [{type:"toggle"}, {effort…}]),
+		// and pi sends `thinking: {type:"disabled"}` for the off level whenever
+		// the map does not null it (pi-ai api/openai-completions.js, the
+		// `thinkingFormat === "deepseek"` branch).
+		thinkingLevelMap: { minimal: null, low: "low", medium: null, high: "high", xhigh: null, max: "max" },
 		compat: { supportsStore: false, supportsDeveloperRole: false, supportsStrictMode: true, maxTokensField: "max_tokens", requiresReasoningContentOnAssistantMessages: true, thinkingFormat: "deepseek" },
 	},
 	{
 		id: "deepseek-v4-pro", name: "DeepSeek V4 Pro", route: "openai-chat", vendor: "DeepSeek",
 		input: 0.528, output: 1.584, cacheRead: 0.0176, cacheWrite: 0, contextWindow: 1_000_000, maxTokens: 384_000,
 		inputModalities: ["text"],
-		thinkingLevelMap: { off: null, minimal: null, low: null, medium: null, high: "high", xhigh: null, max: "max" },
+		// `low` stays null: pi's own DeepSeek-family entries null it, and the one
+		// models.dev row that lists `low` for this id is outvoted by every other
+		// DeepSeek entry (opencode, opencode-go and eight gateways all say
+		// high/max only). `off` unstated = thinking can be turned off.
+		thinkingLevelMap: { minimal: null, low: null, medium: null, high: "high", xhigh: null, max: "max" },
 		compat: { supportsStore: false, supportsDeveloperRole: false, supportsStrictMode: true, maxTokensField: "max_tokens", requiresReasoningContentOnAssistantMessages: true, thinkingFormat: "deepseek" },
 	},
 	{
@@ -236,7 +283,9 @@ export const COMPLETIONS_MODELS: WokeyCompletionsSpec[] = [
 		id: "deepseek-flash", name: "DeepSeek V4.1 Flash", route: "openai-chat", vendor: "DeepSeek",
 		input: 0.112, output: 0.448, cacheRead: 0.00224, cacheWrite: 0, contextWindow: 1_000_000, maxTokens: 393_216,
 		inputModalities: ["text", "image"],
-		thinkingLevelMap: { off: null, minimal: null, low: "low", medium: null, high: "high", xhigh: null, max: "max" },
+		// pi carries this one as `deepseek-v4.1-flash`; the wokey id differs, the
+		// effort ladder does not. `off` unstated, as on the V4 rows above.
+		thinkingLevelMap: { minimal: null, low: "low", medium: null, high: "high", xhigh: null, max: "max" },
 		compat: { supportsStore: false, supportsDeveloperRole: false, supportsStrictMode: true, maxTokensField: "max_tokens", requiresReasoningContentOnAssistantMessages: true, thinkingFormat: "deepseek" },
 	},
 ];
@@ -245,10 +294,10 @@ export const COMPLETIONS_MODELS: WokeyCompletionsSpec[] = [
  * The full Claude lineup on the verified Messages route.
  *
  * Thinking maps and compat are borrowed from pi's own native-anthropic
- * metadata for the same ids and assumed correct unless live use proves
- * otherwise — except `claude-sonnet-5-5`, which pi ships nowhere: it mirrors
- * its sibling Sonnet 5 (flagged here so a wrong guess is easy to find).
- * Rates, context, max output and text-vs-image come from Wokey's own catalog
+ * metadata for the same ids, cross-checked against models.dev (the registry
+ * pi's catalog is generated from) on 2026-10-17 — see the effort-vocabulary
+ * table in `thinkingLevelMap` below. Rates, context, max output and
+ * text-vs-image come from Wokey's own catalog
  * (several rows are text-only there despite pi's image-capable entries, and
  * Sonnet 4.5/Haiku carry a 200k window, not pi's 1M). `cacheWrite` is the 5m
  * rate, matching the Opus 5.5 convention. Opus 5.5 stays first: it is the
@@ -260,50 +309,52 @@ export const CLAUDE_MODELS: WokeyAnthropicSpec[] = [
 		id: "claude-opus-5", paused: true, name: "Claude Opus 5", route: "anthropic-direct", vendor: "Anthropic",
 		input: 0.75, output: 3.75, cacheRead: 0.075, cacheWrite: 0.9375, contextWindow: 1_000_000, maxTokens: 128_000,
 		inputModalities: ["text", "image"],
-		thinkingLevelMap: { off: null, minimal: null, low: null, medium: null, high: null, xhigh: "xhigh", max: "max" },
+		thinkingLevelMap: { off: null, minimal: null, low: "low", medium: "medium", high: "high", xhigh: "xhigh", max: "max" },
 		compat: { supportsMidConvoEffort: true, supportsMidConvoSystemMessages: true, supportsMidConvoToolChanges: true, forceAdaptiveThinking: true, supportsTemperature: false, supportsStrictTools: true },
 	},
 	{
 		id: "claude-opus-4-8", paused: true, name: "Claude Opus 4.8", route: "anthropic-direct", vendor: "Anthropic",
 		input: 0.75, output: 3.75, cacheRead: 0.075, cacheWrite: 0.9375, contextWindow: 1_000_000, maxTokens: 128_000,
 		inputModalities: ["text"],
-		thinkingLevelMap: { off: null, minimal: null, low: null, medium: null, high: null, xhigh: "xhigh", max: "max" },
+		thinkingLevelMap: { minimal: null, low: "low", medium: "medium", high: "high", xhigh: "xhigh", max: "max" },
 		compat: { supportsMidConvoSystemMessages: true, supportsMidConvoToolChanges: true, forceAdaptiveThinking: true, supportsTemperature: false, supportsStrictTools: true },
 	},
 	{
 		id: "claude-opus-4-7", paused: true, name: "Claude Opus 4.7", route: "anthropic-direct", vendor: "Anthropic",
 		input: 0.75, output: 3.75, cacheRead: 0.075, cacheWrite: 0.9375, contextWindow: 1_000_000, maxTokens: 128_000,
 		inputModalities: ["text"],
-		thinkingLevelMap: { off: null, minimal: null, low: null, medium: null, high: null, xhigh: "xhigh", max: "max" },
+		thinkingLevelMap: { minimal: null, low: "low", medium: "medium", high: "high", xhigh: "xhigh", max: "max" },
 		compat: { forceAdaptiveThinking: true, supportsTemperature: false, supportsStrictTools: true },
 	},
 	{
 		id: "claude-opus-4-6", paused: true, name: "Claude Opus 4.6", route: "anthropic-direct", vendor: "Anthropic",
 		input: 0.75, output: 3.75, cacheRead: 0.075, cacheWrite: 0.9375, contextWindow: 1_000_000, maxTokens: 128_000,
 		inputModalities: ["text"],
-		thinkingLevelMap: { off: null, minimal: null, low: null, medium: null, high: null, xhigh: null, max: "max" },
+		// 4.6 predates `xhigh`: effort stops at max (models.dev `anthropic`).
+		thinkingLevelMap: { minimal: null, low: "low", medium: "medium", high: "high", max: "max" },
 		compat: { forceAdaptiveThinking: true, supportsStrictTools: true },
 	},
 	{
-		// No pi entry anywhere for this id: mirrors Sonnet 5 until proven otherwise.
+		// No pi entry anywhere for this id: mirrors Sonnet 5's effort ladder
+		// (flagged here so a wrong guess is easy to find).
 		id: "claude-sonnet-5-5", name: "Claude Sonnet 5.5", route: "anthropic-direct", vendor: "Anthropic",
 		input: 0.3, output: 1.5, cacheRead: 0.03, cacheWrite: 0.375, contextWindow: 1_000_000, maxTokens: 128_000,
 		inputModalities: ["text", "image"],
-		thinkingLevelMap: { off: null, minimal: null, low: null, medium: null, high: null, xhigh: "xhigh", max: "max" },
+		thinkingLevelMap: { minimal: null, low: "low", medium: "medium", high: "high", xhigh: "xhigh", max: "max" },
 		compat: { forceAdaptiveThinking: true, supportsStrictTools: true },
 	},
 	{
 		id: "claude-sonnet-5", paused: true, name: "Claude Sonnet 5", route: "anthropic-direct", vendor: "Anthropic",
 		input: 0.3, output: 1.5, cacheRead: 0.03, cacheWrite: 0.375, contextWindow: 1_000_000, maxTokens: 128_000,
 		inputModalities: ["text"],
-		thinkingLevelMap: { off: null, minimal: null, low: null, medium: null, high: null, xhigh: "xhigh", max: "max" },
+		thinkingLevelMap: { minimal: null, low: "low", medium: "medium", high: "high", xhigh: "xhigh", max: "max" },
 		compat: { forceAdaptiveThinking: true, supportsStrictTools: true },
 	},
 	{
 		id: "claude-sonnet-4-6", paused: true, name: "Claude Sonnet 4.6", route: "anthropic-direct", vendor: "Anthropic",
 		input: 0.45, output: 2.25, cacheRead: 0.045, cacheWrite: 0.5625, contextWindow: 1_000_000, maxTokens: 128_000,
 		inputModalities: ["text"],
-		thinkingLevelMap: { off: null, minimal: null, low: null, medium: null, high: null, xhigh: null, max: "max" },
+		thinkingLevelMap: { minimal: null, low: "low", medium: "medium", high: "high", max: "max" },
 		compat: { forceAdaptiveThinking: true, supportsStrictTools: true },
 	},
 	{
@@ -322,14 +373,14 @@ export const CLAUDE_MODELS: WokeyAnthropicSpec[] = [
 		id: "claude-fable-5-1", name: "Claude Fable 5.1", route: "anthropic-direct", vendor: "Anthropic",
 		input: 2.39, output: 11.95, cacheRead: 0.05975, cacheWrite: 2.9875, contextWindow: 1_000_000, maxTokens: 128_000,
 		inputModalities: ["text", "image"],
-		thinkingLevelMap: { off: null, minimal: null, low: null, medium: null, high: null, xhigh: "xhigh", max: "max" },
+		thinkingLevelMap: { off: null, minimal: null, low: "low", medium: "medium", high: "high", xhigh: "xhigh", max: "max" },
 		compat: { supportsMidConvoEffort: true, supportsMidConvoSystemMessages: true, supportsMidConvoToolChanges: true, forceAdaptiveThinking: true, supportsStrictTools: true },
 	},
 	{
 		id: "claude-fable-5", paused: true, name: "Claude Fable 5", route: "anthropic-direct", vendor: "Anthropic",
 		input: 2.39, output: 11.95, cacheRead: 0.239, cacheWrite: 2.9875, contextWindow: 1_000_000, maxTokens: 128_000,
 		inputModalities: ["text"],
-		thinkingLevelMap: { off: null, minimal: null, low: null, medium: null, high: null, xhigh: "xhigh", max: "max" },
+		thinkingLevelMap: { off: null, minimal: null, low: "low", medium: "medium", high: "high", xhigh: "xhigh", max: "max" },
 		compat: { supportsMidConvoSystemMessages: true, supportsMidConvoToolChanges: true, forceAdaptiveThinking: true, supportsStrictTools: true },
 	},
 ];

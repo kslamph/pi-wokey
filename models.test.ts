@@ -1,6 +1,14 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { calculateCost, getSupportedThinkingLevels } from "@earendil-works/pi-ai";
-import { GPT_MODELS, CLAUDE_MODELS, COMPLETIONS_MODELS, activeModels, activeSpecs, allSpecs, enabledModelIds, livePricingFor, refreshFromCatalog, toModel } from "./models.ts";
+// pi's own generated catalog — the source these maps claim to be borrowed from.
+import { ANTHROPIC_MODELS } from "@earendil-works/pi-ai/providers/anthropic.models";
+import { OPENAI_CODEX_MODELS } from "@earendil-works/pi-ai/providers/openai-codex.models";
+import { DEEPSEEK_MODELS } from "@earendil-works/pi-ai/providers/deepseek.models";
+import { MINIMAX_MODELS } from "@earendil-works/pi-ai/providers/minimax.models";
+import { OPENCODE_MODELS } from "@earendil-works/pi-ai/providers/opencode.models";
+import { OPENCODE_GO_MODELS } from "@earendil-works/pi-ai/providers/opencode-go.models";
+import { ZAI_MODELS } from "@earendil-works/pi-ai/providers/zai.models";
+import { GPT_MODELS, CLAUDE_MODELS, COMPLETIONS_MODELS, WOKEY_MODELS, activeModels, activeSpecs, allSpecs, enabledModelIds, livePricingFor, refreshFromCatalog, toModel } from "./models.ts";
 import { getRoute } from "./routes.ts";
 
 // refreshFromCatalog reconciles the baked-in table in place against the live
@@ -364,10 +372,12 @@ describe("full Claude lineup", () => {
 
 	it("borrows pi-native thinking maps and compat per row", () => {
 		const byId = Object.fromEntries(allSpecs().map((s) => [s.id, s]));
-		// Sonnet 5.5 has no pi entry anywhere: mirrors Sonnet 5 (see the spec
-		// comment), so pin the borrowed shape explicitly.
+		// Sonnet 5.5 has no pi entry anywhere: it mirrors Sonnet 5's effort ladder
+		// (see the spec comment), so pin the borrowed shape explicitly. `off` is
+		// absent, not null: Sonnet 5.5 has no managed-effort flag, so a client may
+		// turn thinking off entirely.
 		expect(toModel(byId["claude-sonnet-5-5"]!).thinkingLevelMap).toEqual({
-			off: null, minimal: null, low: null, medium: null, high: null, xhigh: "xhigh", max: "max",
+			minimal: null, low: "low", medium: "medium", high: "high", xhigh: "xhigh", max: "max",
 		});
 		expect(toModel(byId["claude-opus-5-5"]!).compat).toMatchObject({
 			forceAdaptiveThinking: true, supportsTemperature: false, supportsStrictTools: true,
@@ -417,17 +427,20 @@ describe("chat-completions vendors", () => {	it("lists Zhipu, MiniMax and DeepSe
 	it("resolves DeepSeek Pro to the deepseek thinking format with reasoning replay", () => {
 		const model = toModel(allSpecs().find((s) => s.id === "deepseek-v4-pro")!);
 		expect(model.api).toBe("openai-completions");
-		expect(model.thinkingLevelMap).toEqual({ off: null, minimal: null, low: null, medium: null, high: "high", xhigh: null, max: "max" });
+		expect(model.thinkingLevelMap).toEqual({ minimal: null, low: null, medium: null, high: "high", xhigh: null, max: "max" });
 		expect(model.compat).toMatchObject({ thinkingFormat: "deepseek", requiresReasoningContentOnAssistantMessages: true });
 		expect(model.maxTokens).toBe(384_000);
 	});
 
-	it("leaves MiniMax-M3 on pi's default thinking levels, text-only", () => {
+	it("shows MiniMax-M3 as a toggle, not an effort ladder", () => {
 		const model = toModel(allSpecs().find((s) => s.id === "MiniMax-M3")!);
 		expect(model.api).toBe("openai-completions");
 		expect(model.input).toEqual(["text"]);
-		// pi's own entry carries no map — borrowed as-is, so pi's default applies.
-		expect("thinkingLevelMap" in model).toBe(false);
+		// MiniMax M3 has thinking on/off and no effort vocabulary (models.dev
+		// `minimax`/`minimax-cn`: reasoning_options [{type:"toggle"}]), so the
+		// picker must offer exactly two states instead of pi's default five.
+		expect(model.thinkingLevelMap).toEqual({ minimal: null, low: null, medium: null, high: "high", xhigh: null, max: null });
+		expect(getSupportedThinkingLevels(model as never)).toEqual(["off", "high"]);
 	});
 
 	it("registers only the selector's checked set", async () => {
@@ -456,7 +469,7 @@ describe("chat-completions vendors", () => {	it("lists Zhipu, MiniMax and DeepSe
 		const model = toModel(allSpecs().find((s) => s.id === "deepseek-flash")!);
 		expect(model.api).toBe("openai-completions");
 		expect(model.baseUrl).toBe("https://api.wokey.ai/v1");
-		expect(model.thinkingLevelMap).toEqual({ off: null, minimal: null, low: "low", medium: null, high: "high", xhigh: null, max: "max" });
+		expect(model.thinkingLevelMap).toEqual({ minimal: null, low: "low", medium: null, high: "high", xhigh: null, max: "max" });
 		expect(model.compat).toMatchObject({ thinkingFormat: "deepseek", requiresReasoningContentOnAssistantMessages: true });
 		expect(model.cost).toMatchObject({ input: 0.112, output: 0.448 });
 		expect(model.maxTokens).toBe(393_216);
@@ -492,5 +505,112 @@ describe("cross-protocol model switch", () => {
 		// The cache-read fixture's 2048 tokens turn into dollars at 0.03/1M.
 		expect(usage.cost.cacheRead).toBeCloseTo((0.03 * 2048) / 1_000_000, 12);
 		expect(usage.cost.total).toBeCloseTo((0.6 * 7 + 3.0 * 59 + 0.03 * 2048) / 1_000_000, 12);
+	});
+});
+
+describe("thinking levels", () => {
+	/**
+	 * Every row's picker levels, pinned against two independent sources: pi's own
+	 * generated catalog (`dist/providers/data/*.json`, imported below) and
+	 * models.dev (`https://models.dev/api.json` — the registry pi's catalog is
+	 * generated from), both read 2026-10-17. The vendor-owned `reasoning_options`
+	 * per model:
+	 *
+	 *   anthropic  Opus 5.5 / 5 / 4.8 / 4.7, Sonnet 5.5 / 5, Fable 5.1 / 5 → low…max
+	 *              Opus 4.6, Sonnet 4.6                                  → low…high + max (no xhigh)
+	 *              Sonnet 4.5, Haiku 4.5                                  → budget_tokens only
+	 *   zai        GLM-5.3, GLM-5.3-Flash                                 → low, high, max
+	 *   deepseek   V4 Flash / V4.1 Flash                                  → toggle + low, high, max
+	 *              V4 Pro                                                   → toggle + high, max
+	 *   minimax    M3                                                      → toggle only, no effort
+	 *
+	 * `off` appears wherever the model can think on demand instead of always:
+	 * it is hidden only where pi always sends `output_config.effort`
+	 * (managed-effort rows), or where pi's own catalog states `off: null`.
+	 * `minimal` never appears for Anthropic — its effort vocabulary has no
+	 * minimal, and pi's own Opus 5.5 entry already nulls it.
+	 */
+	const LEVELS: Record<string, string[]> = {
+		"gpt-6.1-sol": ["low", "medium", "high", "xhigh", "max"],
+		"gpt-6-luna": ["off", "low", "medium", "high", "xhigh", "max"],
+		"gpt-6-astra": ["low", "medium", "high", "xhigh", "max"],
+		"claude-opus-5-5": ["low", "medium", "high", "xhigh", "max"],
+		"claude-opus-5": ["low", "medium", "high", "xhigh", "max"],
+		"claude-opus-4-8": ["off", "low", "medium", "high", "xhigh", "max"],
+		"claude-opus-4-7": ["off", "low", "medium", "high", "xhigh", "max"],
+		"claude-opus-4-6": ["off", "low", "medium", "high", "max"],
+		"claude-sonnet-5-5": ["off", "low", "medium", "high", "xhigh", "max"],
+		"claude-sonnet-5": ["off", "low", "medium", "high", "xhigh", "max"],
+		"claude-sonnet-4-6": ["off", "low", "medium", "high", "max"],
+		// Budget-based, not effort-based: pi maps these levels onto thinking
+		// budgets, so they keep pi's own default and carry no map here.
+		"claude-sonnet-4-5": ["off", "minimal", "low", "medium", "high"],
+		"claude-haiku-4-5": ["off", "minimal", "low", "medium", "high"],
+		"claude-fable-5-1": ["low", "medium", "high", "xhigh", "max"],
+		"claude-fable-5": ["low", "medium", "high", "xhigh", "max"],
+		"glm-5.3": ["low", "high", "max"],
+		"glm-5.3-flash": ["low", "high", "max"],
+		"MiniMax-M3": ["off", "high"],
+		"deepseek-v4-flash": ["off", "low", "high", "max"],
+		"deepseek-v4-pro": ["off", "high", "max"],
+		"deepseek-flash": ["off", "low", "high", "max"],
+	};
+
+	it("offers every row exactly the levels its vendor supports", () => {
+		for (const [id, levels] of Object.entries(LEVELS)) {
+			const spec = WOKEY_MODELS.find((s) => s.id === id);
+			expect(spec, `${id} left the catalog`).toBeDefined();
+			expect(getSupportedThinkingLevels(toModel(spec!) as never), id).toEqual(levels);
+		}
+	});
+
+	it("never hides a level that pi's own catalog leaves supported", () => {
+		// The bug this guards: pi's maps are sparse, and in pi's semantics a
+		// missing key means "supported" — an explicit `null` is what hides a
+		// level. Copying the keys of a sparse map and filling the gaps with
+		// `null` therefore deletes levels instead of preserving them.
+		const piCatalog = new Map<string, Record<string, string | null>>();
+		for (const models of [ANTHROPIC_MODELS, OPENAI_CODEX_MODELS, DEEPSEEK_MODELS, MINIMAX_MODELS, OPENCODE_MODELS, OPENCODE_GO_MODELS, ZAI_MODELS]) {
+			for (const [id, m] of Object.entries(models as Record<string, { thinkingLevelMap?: Record<string, string | null> }>)) {
+				const known = piCatalog.get(id);
+				// Prefer the richest provider copy, so the union of pi's own
+				// claims for an id is the bar this row must clear.
+				if (!known || Object.keys(m.thinkingLevelMap ?? {}).length > Object.keys(known).length) {
+					if (m.thinkingLevelMap) piCatalog.set(id, m.thinkingLevelMap);
+				}
+			}
+		}
+		// `minimal` is the one level we narrow on purpose: Anthropic has no
+		// minimal effort (pi's adapter would quietly send `low` for it), and the
+		// GPT rows follow OpenAI's model cards, which rule it out for some ids.
+		const LEVELS_ORDERED = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
+		const ALLOWED = new Set(["minimal"]);
+		// pi treats `xhigh`/`max` as opt-in: a missing key hides them, while for
+		// every other level a missing key means "supported". So only a key pi
+		// actually states can constrain us, and for these two an absent key is
+		// pi agreeing with us rather than contradicting us.
+		const OPT_IN = new Set(["xhigh", "max"]);
+		// The retired GPT rows are excluded on purpose: their efforts were probed
+		// off the wokey gateway, not read off a model card (see the NOTE above
+		// `GPT_MODELS` in models.ts), so pi's own sparse maps for them — which
+		// claim `high`/`max` on rows the card may not support — are no better a
+		// reference than the probe. Every other row's map is borrowed or
+		// card-derived, and pi's claims are the floor it must clear.
+		const PROBED = new Set(["gpt-6-sol", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5"]);
+		const narrowed: string[] = [];
+		for (const spec of WOKEY_MODELS) {
+			if (PROBED.has(spec.id)) continue;
+			const piMap = piCatalog.get(spec.id);
+			if (!piMap) continue; // pi states no levels for this id (budget-based rows, MiniMax): nothing to compare
+			const ours = (toModel(spec).thinkingLevelMap ?? {}) as Record<string, string | null>;
+			for (const level of LEVELS_ORDERED) {
+				if (ALLOWED.has(level)) continue;
+				const theirs = piMap[level];
+				if (theirs === null) continue; // pi hides it too: a shared decision
+				if (theirs === undefined && OPT_IN.has(level)) continue; // opt-in level pi never mentions
+				if (ours[level] === null) narrowed.push(`${spec.id}:${level}`);
+			}
+		}
+		expect(narrowed).toEqual([]);
 	});
 });
