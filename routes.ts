@@ -42,8 +42,8 @@ export interface WokeyRoute {
 	/**
 	 * Whether this route's responses can carry a verifiable proof.
 	 *
-	 * "official": Wokey returns a `tee.proof` on this form against an official
-	 * upstream, verified against `endpoint` above. "none": Wokey documents that
+	 * "official": Wokey returns a trailing proof record on this form against an
+	 * official upstream, verified against `endpoint` above. "none": Wokey documents
 	 * proofs cover only Claude Messages and GPT Responses on official routes,
 	 * so responses here are unverified by design — recorded as `unproven` and
 	 * never warned on (see README §Reading the verdict).

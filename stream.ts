@@ -69,8 +69,8 @@ function buildRoutedOptions<T extends StreamOptions>(
 ): T {
 	const headers: Record<string, string | null> = { ...options?.headers };
 	// The provider drives the proof transport, and the only delivery the probe can
-	// verify is the relay's default trailing `event: tee.proof` SSE record. Drop a
-	// caller-supplied proof-mode header so the relay cannot be asked for a transport
+	// verify is the relay's default trailing proof record. Drop a caller-supplied
+	// proof-mode header so the relay cannot be asked for a transport
 	// (e.g. multipart) that pi's streaming adapter cannot consume.
 	for (const key of Object.keys(headers)) {
 		if (key.toLowerCase() === config.proofHeaderName.toLowerCase()) delete headers[key];

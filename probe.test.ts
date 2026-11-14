@@ -85,6 +85,14 @@ function sseWithProof(proof: TeeProofWire, body = "event: response.completed\nda
 	]);
 }
 
+/** The relay's current delivery: a trailing `: tee-proof {json}` SSE comment. */
+function sseWithProofComment(proof: TeeProofWire, body = "event: response.completed\ndata: {\"response\":{\"model\":\"gpt-6.1-sol\"}}\n\n") {
+	return Buffer.concat([
+		Buffer.from(body, "utf8"),
+		Buffer.from(`: tee-proof ${JSON.stringify(proof)}\n\n`, "utf8"),
+	]);
+}
+
 function findCheck(checks: { name: string; ok: boolean; severity?: string }[], name: string) {
 	return checks.find((c) => c.name === name);
 }
@@ -127,6 +135,37 @@ describe("proof record parsing", () => {
 		expect(parsed.body.toString("utf8")).toBe("data: hello\n\n");
 	});
 
+	it("finds the trailing tee-proof comment and returns the upstream body", () => {
+		const proof = makeProof();
+		const parsed = parseTeeProofEvent(sseWithProofComment(proof, "data: hello\n\n"));
+		expect(parsed.proof?.nonce).toBe(NONCE);
+		expect(parsed.body.toString("utf8")).toBe("data: hello\n\n");
+	});
+
+	it("accepts a tee-proof comment written with CRLF line endings", () => {
+		const proof = makeProof();
+		const wire = Buffer.from(`data: hello\r\n\r\n: tee-proof ${JSON.stringify(proof)}\r\n\r\n`, "utf8");
+		const parsed = parseTeeProofEvent(wire);
+		expect(parsed.proof?.nonce).toBe(NONCE);
+		expect(parsed.body.toString("utf8")).toBe("data: hello\r\n\r\n");
+	});
+
+	it("accepts a comment record whose final blank line was lost", () => {
+		const proof = makeProof();
+		const wire = sseWithProofComment(proof, "data: hello\n\n");
+		const parsed = parseTeeProofEvent(wire.subarray(0, wire.length - 2));
+		expect(parsed.proof?.nonce).toBe(NONCE);
+		expect(parsed.body.toString("utf8")).toBe("data: hello\n\n");
+	});
+
+	it("rejects a comment record with unsigned trailing bytes", () => {
+		const proof = makeProof();
+		const wire = Buffer.concat([sseWithProofComment(proof, "data: hello\n\n"), Buffer.from("data: unsigned\n\n", "utf8")]);
+		const parsed = parseTeeProofEvent(wire);
+		expect(parsed.proof).toBeUndefined();
+		expect(parsed.body.equals(wire)).toBe(true);
+	});
+
 	it("is not fooled by an identical string inside upstream content", () => {
 		const proof = makeProof();
 		const parsed = parseTeeProofEvent(sseWithProof(proof, "data: see event: tee.proof docs\n\n"));
@@ -164,6 +203,30 @@ describe("trailing proof-event stripper", () => {
 			const out = await collect(stripTrailingProofEvent(src));
 			expect(out.toString("utf8"), `chunk size ${size}`).toBe(body);
 		}
+	});
+
+	it("drops the comment record even when it straddles chunk boundaries", async () => {
+		for (const size of [1, 3, 7, 16, 64, 4096]) {
+			const src = new ReadableStream<Uint8Array>({
+				async start(c) {
+					for await (const chunk of drip(sseWithProofComment(proof, body), size)) c.enqueue(chunk);
+					c.close();
+				},
+			});
+			const out = await collect(stripTrailingProofEvent(src));
+			expect(out.toString("utf8"), `chunk size ${size}`).toBe(body);
+		}
+	});
+
+	it("keeps a mid-line lookalike that is not a record", async () => {
+		const prose = 'event: message_stop\ndata: {"note":": tee-proof {}"}\n\n';
+		const src = new ReadableStream<Uint8Array>({
+			async start(c) {
+				c.enqueue(new Uint8Array(Buffer.from(prose, "utf8")));
+				c.close();
+			},
+		});
+		expect((await collect(stripTrailingProofEvent(src))).toString("utf8")).toBe(prose);
 	});
 
 	it("passes a proof-free stream through untouched", async () => {

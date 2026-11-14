@@ -172,6 +172,24 @@ describe("probing fetch, end to end", () => {
 		}
 	});
 
+	it("verifies a genuine exchange delivered with the tee-proof comment", async () => {
+		const upstream = 'event: response.completed\ndata: {"response":{"model":"gpt-6.1-sol","status":"completed"}}\n\n';
+		const proof = signProof(Buffer.from(upstream, "utf8"), Buffer.from(REQUEST_BODY, "utf8"));
+		const record = `: tee-proof ${JSON.stringify(proof)}\n\n`;
+		reply = () => ({
+			contentType: "text/event-stream",
+			// Split the comment record across chunk boundaries on purpose.
+			chunks: [upstream, record.slice(0, 20), record.slice(20)],
+		});
+
+		const { clientBytes, report } = await run(REQUEST_BODY);
+
+		expect(clientBytes.toString("utf8")).toBe(upstream);
+		expect(clientBytes.toString("utf8")).not.toMatch(/tee[.-]proof/);
+		expect(report.status).toBe("verified-with-gaps");
+		expect(report.reportedModel).toBe("gpt-6.1-sol");
+	});
+
 	it("reports a strict verified when the route policy verifies request binding", async () => {
 		const upstream = 'event: response.completed\ndata: {"response":{"model":"gpt-6.1-sol","status":"completed"}}\n\n';
 		const proof = signProof(Buffer.from(upstream, "utf8"), Buffer.from(REQUEST_BODY, "utf8"));
@@ -270,6 +288,20 @@ describe("probing fetch, end to end", () => {
 		expect(report.checks.find((c) => c.name === "Response signature")?.ok).toBe(false);
 	});
 
+	it("fails verification when a forged mid-stream tee-proof comment appears", async () => {
+		const upstream = 'event: response.completed\ndata: {"response":{"model":"gpt-6.1-sol"}}\n\n';
+		const proof = signProof(Buffer.from(upstream, "utf8"), Buffer.from(REQUEST_BODY, "utf8"));
+		reply = () => ({
+			contentType: "text/event-stream",
+			chunks: [upstream, ': tee-proof {"forged":true}\n\n', `: tee-proof ${JSON.stringify(proof)}\n\n`],
+		});
+
+		const { report } = await run(REQUEST_BODY);
+
+		expect(report.status).toBe("failed");
+		expect(report.checks.find((c) => c.name === "Response signature")?.ok).toBe(false);
+	});
+
 	it("fails closed on a multipart envelope it did not negotiate", async () => {
 		const body = JSON.stringify({ model: "gpt-6.1-sol", output: [] });
 		const proof = signProof(Buffer.from(body, "utf8"), Buffer.from(REQUEST_BODY, "utf8"));
@@ -292,7 +324,9 @@ describe("probing fetch, end to end", () => {
 	it("verifies a non-streaming JSON response and strips the proof from the body", async () => {
 		const body = JSON.stringify({ model: "gpt-6.1-sol", output: [] });
 		const proof = signProof(Buffer.from(body, "utf8"), Buffer.from(REQUEST_BODY, "utf8"));
-		reply = () => ({ contentType: "application/json", chunks: [body, `event: tee.proof\ndata: ${JSON.stringify(proof)}\n\n`] });
+		// A proof record is only a record at a line start; the relay terminates the
+		// JSON body with a newline before appending it.
+		reply = () => ({ contentType: "application/json", chunks: [body, `\nevent: tee.proof\ndata: ${JSON.stringify(proof)}\n\n`] });
 
 		const { clientBytes, report } = await run(REQUEST_BODY);
 
@@ -300,6 +334,17 @@ describe("probing fetch, end to end", () => {
 		// cover only the upstream body.
 		expect(clientBytes.toString("utf8")).toBe(body);
 		expect(report.status).toBe("verified-with-gaps"); // request binding is a documented gap
+	});
+
+	it("verifies a non-streaming JSON response delivered with a tee-proof comment", async () => {
+		const body = JSON.stringify({ model: "gpt-6.1-sol", output: [] });
+		const proof = signProof(Buffer.from(body, "utf8"), Buffer.from(REQUEST_BODY, "utf8"));
+		reply = () => ({ contentType: "application/json", chunks: [body, `\n: tee-proof ${JSON.stringify(proof)}\n\n`] });
+
+		const { clientBytes, report } = await run(REQUEST_BODY);
+
+		expect(clientBytes.toString("utf8")).toBe(body);
+		expect(report.status).toBe("verified-with-gaps");
 	});
 });
 /**
@@ -343,12 +388,19 @@ function anthropicPolicy(over: Partial<VerificationPolicy> = {}): VerificationPo
 
 async function runAnthropicFixture(
 	name: string,
-	opts: { sendBody?: string; policyOver?: Partial<VerificationPolicy>; expectedModel?: string; tamper?: (body: string) => string } = {},
+	opts: {
+		sendBody?: string;
+		policyOver?: Partial<VerificationPolicy>;
+		expectedModel?: string;
+		tamper?: (body: string) => string;
+		/** Which wire form the relay used for the trailing proof record. */
+		proofFormat?: "event" | "comment";
+	} = {},
 ): Promise<{ clientBytes: Buffer; report: ProofReport; proof: TeeProofWire; body: string; requestBody: string }> {
 	const { wire, proof, requestBody } = loadFixture(name);
 	const marker = wire.lastIndexOf("event: tee.proof");
 	const body = wire.slice(0, marker);
-	const record = wire.slice(marker);
+	const record = opts.proofFormat === "comment" ? `: tee-proof ${JSON.stringify(proof)}\n\n` : wire.slice(marker);
 	const served = (opts.tamper ? opts.tamper(body) : body) + record;
 	// Odd 13-byte slices on purpose: the marker is split across chunk
 	// boundaries, so stripping must reassemble before matching.
@@ -417,12 +469,24 @@ describe("anthropic-direct route against recorded fixtures", () => {
 
 		// Proof stripping leaves valid downstream SSE: byte-exact body, no proof.
 		expect(clientBytes.toString("utf8")).toBe(body);
-		expect(clientBytes.toString("utf8")).not.toContain("tee.proof");
+		expect(clientBytes.toString("utf8")).not.toMatch(/tee[.-]proof/);
 		expect(report.status).toBe("verified-with-gaps");
 		expect(report.reportedModel).toBe("claude-opus-5-5");
 		expect(report.upstreamHost).toBe("api.anthropic.com");
 		expect(report.upstreamPath).toBe("/v1/messages");
 		expect(report.upstreamMethod).toBe("POST");
+		for (const c of report.checks) {
+			if (c.name === "Request binding") expect(c.ok).toBe(false); // documented gap
+			else expect(c.ok, `${c.name}: ${c.detail}`).toBe(true);
+		}
+	});
+
+	it("verifies the same live-shaped exchange when the relay ships the tee-proof comment", async () => {
+		const { clientBytes, report, body } = await runAnthropicFixture("anthropic-opus-5-5", { proofFormat: "comment" });
+
+		expect(clientBytes.toString("utf8")).toBe(body);
+		expect(clientBytes.toString("utf8")).not.toMatch(/tee[.-]proof/);
+		expect(report.status).toBe("verified-with-gaps");
 		for (const c of report.checks) {
 			if (c.name === "Request binding") expect(c.ok).toBe(false); // documented gap
 			else expect(c.ok, `${c.name}: ${c.detail}`).toBe(true);

@@ -29,8 +29,9 @@ export interface WokeyConfig {
 	expectedPcr0: string;
 	/**
 	 * Header that asks the relay to select a proof transport. The provider strips
-	 * it from outgoing requests and relies on the relay default: a trailing
-	 * `event: tee.proof` SSE record, which the probe strips before pi sees it.
+	 * it from outgoing requests and relies on the relay default: a trailing proof
+	 * record — the `: tee-proof` SSE comment, or the legacy `event: tee.proof`
+	 * event for old captures — which the probe strips before pi sees it.
 	 * Multipart proof delivery is deliberately not negotiable through this provider.
 	 */
 	proofHeaderName: string;

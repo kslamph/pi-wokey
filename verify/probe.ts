@@ -10,20 +10,22 @@
  * `StreamOptions`, so pi's own OpenAI adapter still does all the stream parsing.
  *
  * Streaming is preserved: the body is `tee()`d, one branch feeds the verifier,
- * the other feeds the model adapter with the trailing proof event stripped out
+ * the other feeds the model adapter with the trailing proof record stripped out
  * (the same thing the upstream project's own tee-verify-proxy does, so pi never
- * sees an SSE event it does not know).
+ * sees a record it does not know).
  *
  * Design note — we verify the bytes the *client* received, not the raw wire
- * bytes. If a relay injected a fake mid-stream `event: tee.proof` to truncate
+ * bytes. If a relay injected a fake mid-stream proof record to truncate
  * output, the truncated prefix would fail the response hash and surface as a
  * verification failure rather than passing quietly.
  */
 
 import { Buffer } from "node:buffer";
+import { sha256 } from "./signing.ts";
 import {
 	parseTeeProofEvent,
 	verifyTeeExchange,
+	TEE_PROOF_COMMENT,
 	TEE_PROOF_EVENT,
 	type AttestationVerifier,
 	type TeeCheck,
@@ -87,10 +89,38 @@ export interface ProbeDeps {
 	attestationVerifier?: AttestationVerifier;
 }
 
-const PROOF_EVENT_LF = Buffer.from("event: tee.proof\n", "utf8");
-const PROOF_EVENT_CRLF = Buffer.from("event: tee.proof\r\n", "utf8");
+/**
+ * The trailing proof record, in both wire formats the relay has shipped: the
+ * current `: tee-proof {json}` SSE comment and the legacy `event: tee.proof`
+ * event. Only an occurrence that starts a line counts, exactly as the vendored
+ * parser decides it; anything else is upstream content.
+ */
+const PROOF_COMMENT = Buffer.from(`: ${TEE_PROOF_COMMENT} `, "utf8");
+const PROOF_EVENT_LF = Buffer.from(`event: ${TEE_PROOF_EVENT}\n`, "utf8");
+const PROOF_EVENT_CRLF = Buffer.from(`event: ${TEE_PROOF_EVENT}\r\n`, "utf8");
 /** Held-back tail so a marker straddling a chunk boundary is still detected. */
 const MARKER_WINDOW = 64;
+
+/** Last occurrence of `marker` that begins a line (offset 0 included), or -1. */
+function lastLineStart(bytes: Buffer, marker: Buffer): number {
+	for (let idx = bytes.lastIndexOf(marker); idx >= 0; idx = idx === 0 ? -1 : bytes.lastIndexOf(marker, idx - 1)) {
+		if (idx === 0 || bytes[idx - 1] === 0x0a || bytes[idx - 1] === 0x0d) return idx;
+	}
+	return -1;
+}
+
+/**
+ * Offset where a trailing proof record begins, or -1 when the stream carries
+ * none. The record is last by protocol, so this is the last line-start marker:
+ * everything before it is the upstream body the client received.
+ */
+function proofRecordOffset(bytes: Buffer): number {
+	return Math.max(
+		lastLineStart(bytes, PROOF_COMMENT),
+		lastLineStart(bytes, PROOF_EVENT_LF),
+		lastLineStart(bytes, PROOF_EVENT_CRLF),
+	);
+}
 
 // ── request byte capture ───────────────────────────────────────────────────────
 
@@ -156,21 +186,54 @@ function normalizeDeliveredBody(clientBytes: Buffer, proof: TeeProofWire): { bod
 	// with the proof record already stripped. Re-attach the proof we parsed so the
 	// vendored parser locates the genuine trailing record; a forged marker already
 	// inside clientBytes stays in the hashed prefix and fails the run.
+	//
+	// The parser anchors a record to a line start. An SSE prefix always ends at one;
+	// a non-SSE body (no trailing line break) does not, so add the separator the
+	// parser needs and drop it again: the hash must cover exactly what was delivered.
+	const last = clientBytes[clientBytes.length - 1];
+	const needsSeparator = clientBytes.length > 0 && last !== 0x0a && last !== 0x0d;
 	const reattached = Buffer.concat([
 		clientBytes,
+		...(needsSeparator ? [Buffer.from("\n", "utf8")] : []),
 		Buffer.from(`event: ${TEE_PROOF_EVENT}\ndata: ${JSON.stringify(proof)}\n\n`, "utf8"),
 	]);
 	const reparsed = parseTeeProofEvent(reattached);
-	return { body: reparsed.body, strippedKeepalives: reparsed.ignoredTransportKeepaliveCount ?? 0 };
+	// Could not locate the record at all: hand the bytes back unchanged rather than
+	// trim a guess off the end. The response hash then decides the verdict.
+	if (!reparsed.proof) return { body: clientBytes, strippedKeepalives: 0 };
+	const body = needsSeparator ? reparsed.body.subarray(0, reparsed.body.length - 1) : reparsed.body;
+	return { body, strippedKeepalives: reparsed.ignoredTransportKeepaliveCount ?? 0 };
 }
 
-// ── trailing proof-event stripper ──────────────────────────────────────────────
+/**
+ * Relay framing for a non-SSE body: the trailing proof record is only a record at
+ * a line start, so the relay separates it from the body with a line break. That
+ * break is transport, not signed content — drop it, but only when the signed hash
+ * covers the body without it, exactly as the vendored keepalive normalizer gates
+ * on the hash rather than guessing.
+ */
+function dropUnsignedSeparator(body: Buffer, proof: TeeProofWire): Buffer {
+	const expected = String(proof.response_body_sha256 ?? "").toLowerCase();
+	if (!/^[a-f0-9]{64}$/.test(expected)) return body;
+	const candidates: Buffer[] = [];
+	if (body.length >= 2 && body[body.length - 2] === 0x0d && body[body.length - 1] === 0x0a) {
+		candidates.push(body.subarray(0, body.length - 2));
+	}
+	if (body.length >= 1 && body[body.length - 1] === 0x0a) candidates.push(body.subarray(0, body.length - 1));
+	for (const candidate of candidates) {
+		if (sha256(candidate).toString("hex") === expected) return candidate;
+	}
+	return body;
+}
+
+// ── trailing proof-record stripper ───────────────────────────────────────────
 
 /**
- * Pass bytes through until the trailing `event: tee.proof` record, then stop.
- * The record is always last by protocol, so nothing legitimate is dropped; and
- * because the stripped prefix is what we verify, a forged mid-stream marker
- * shows up as a hash mismatch rather than a silent truncation.
+ * Pass bytes through until the trailing proof record (`: tee-proof` comment or
+ * legacy `event: tee.proof`), then stop. The record is always last by protocol,
+ * so nothing legitimate is dropped; and because the stripped prefix is what we
+ * verify, a forged mid-stream marker shows up as a hash mismatch rather than a
+ * silent truncation.
  */
 export function stripTrailingProofEvent(source: ReadableStream<Uint8Array>): ReadableStream<Uint8Array> {
 	const reader = source.getReader();
@@ -193,7 +256,7 @@ export function stripTrailingProofEvent(source: ReadableStream<Uint8Array>): Rea
 				}
 				if (value) pending = Buffer.concat([pending, Buffer.from(value)]);
 
-				const idx = Math.max(pending.lastIndexOf(PROOF_EVENT_LF), pending.lastIndexOf(PROOF_EVENT_CRLF));
+				const idx = proofRecordOffset(pending);
 				if (idx >= 0) {
 					if (idx > 0) controller.enqueue(new Uint8Array(pending.subarray(0, idx)));
 					finished = true;
@@ -229,7 +292,7 @@ export interface VerificationPolicy {
 }
 
 export interface VerifyInput {
-	/** Raw wire bytes, including any trailing tee.proof record. The proof is read from here. */
+	/** Raw wire bytes, including any trailing proof record. The proof is read from here. */
 	wireBytes: Buffer;
 	/**
 	 * Bytes actually delivered to the caller (proof already stripped). This is what
@@ -310,7 +373,7 @@ export function verifyExchange(input: VerifyInput, policy: VerificationPolicy): 
 			report: {
 				status: "unproven",
 				checks: [
-					{ name: "Proof present", ok: false, severity: "fail", detail: "no tee.proof in the response — nothing was attested" },
+					{ name: "Proof present", ok: false, severity: "fail", detail: "no trailing proof record in the response — nothing was attested" },
 				],
 				bytes: input.wireBytes.length,
 			},
@@ -459,11 +522,11 @@ export function errorChecks(report: ProofVerdict): ClassifiedCheck[] {
  * answer.
  */
 const REASON_VOICE: Record<string, ClassifiedCheck> = {
-	"no tee.proof event in stream": {
+	"no proof record in stream": {
 		name: "Proof missing",
 		ok: false,
 		severity: "fail",
-		detail: "no proof event in the response stream — wokey did not attest this answer",
+		detail: "no proof record in the response stream — wokey did not attest this answer",
 	},
 	"could not read response for verification": {
 		name: "Verifier error",
@@ -540,7 +603,7 @@ export function createProbingFetch(deps: ProbeDeps): typeof globalThis.fetch {
 		if (!response.body || !/text\/event-stream/i.test(contentType)) {
 			const bytes = Buffer.from(await response.arrayBuffer());
 			const parsedBytes = parseTeeProofEvent(bytes);
-			const delivered = parsedBytes.proof ? parsedBytes.body : bytes;
+			const delivered = parsedBytes.proof ? dropUnsignedSeparator(parsedBytes.body, parsedBytes.proof) : bytes;
 			finish(bytes, delivered);
 			return new Response(delivered, {
 				status: response.status,
@@ -558,9 +621,9 @@ export function createProbingFetch(deps: ProbeDeps): typeof globalThis.fetch {
 				// Verify exactly what the client was given, not the raw wire bytes. The
 				// record is trailing by protocol; a forged mid-stream marker therefore
 				// extends the hashed prefix past what the client saw, failing the run.
-				const idx = Math.max(full.lastIndexOf(PROOF_EVENT_LF), full.lastIndexOf(PROOF_EVENT_CRLF));
+				const idx = proofRecordOffset(full);
 				const clientBytes = idx >= 0 ? full.subarray(0, idx) : full;
-				finish(full, clientBytes, idx < 0 ? "no tee.proof event in stream" : undefined);
+				finish(full, clientBytes, idx < 0 ? "no proof record in stream" : undefined);
 			})
 			.catch(() => finish(Buffer.alloc(0), Buffer.alloc(0), "could not read response for verification"));
 

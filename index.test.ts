@@ -139,8 +139,8 @@ describe("proof verdict routing", () => {
 
 	it("treats a missing proof on an official route as an error, every time", () => {
 		const h = harness("tui");
-		h.report(verdict("unproven", "no tee.proof in the response"));
-		h.report(verdict("unproven", "no tee.proof in the response"));
+		h.report(verdict("unproven", "no proof record in the response"));
+		h.report(verdict("unproven", "no proof record in the response"));
 		// Proofs stopping is a regression of the claim, not a per-session novelty, so
 		// it is no longer deduped the way an ambiguous `unproven` used to be.
 		expect(h.notify).toHaveBeenCalledTimes(2);
@@ -190,7 +190,7 @@ describe("proof verdict routing", () => {
 		h.report(verdict("verified"));
 		h.report(gapped());
 		h.report(verdict("failed"));
-		h.report(verdict("unproven", "no tee.proof in the response"));
+		h.report(verdict("unproven", "no proof record in the response"));
 		h.report(verdict("unproven", "verification covers Claude + GPT routes only", "openai-chat"));
 		const s = h.stats();
 		expect(s.attested + s.errors + s.unverifiable).toBe(s.total);

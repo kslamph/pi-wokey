@@ -153,5 +153,5 @@ Unofficial: an independent integration by a wokey subscriber, with no affiliatio
 endorsement from wokey.ai. `verify/signing.ts`, `verify/verify-attestation-cose.mjs` and
 `verify/tee-verify-core.ts` are vendored from
 [focuxdot/proof-of-observation](https://github.com/focuxdot/proof-of-observation) at
-`4bb11f36370ca5d574310882e0e6aff30c424287` (dual MIT / Apache-2.0; Apache-2.0 exercised
+`280e74c3fd7b859ae22d84a59d1fdd694b7c407c` (dual MIT / Apache-2.0; Apache-2.0 exercised
 here).

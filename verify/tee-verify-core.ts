@@ -4,7 +4,7 @@
 // ─────────────────────────────────────────────────────────────────────────────
 // VENDORED VERBATIM from focuxdot/proof-of-observation (MIT / Apache-2.0).
 // Security-critical crypto + wire parsing — do not hand-edit; upstream tests cover it.
-// Vendored at commit 4bb11f3. See ../LICENSE and ../README.md §Vendored code.
+// Vendored at commit 280e74c3. See ../LICENSE and ../README.md §Vendored code.
 // ─────────────────────────────────────────────────────────────────────────────
 // 真硬件客户端 verifier 的**纯核心**(让自证成立的那一半,可复用)—— v2 字段分解版。
 //
@@ -67,7 +67,7 @@ export type AttestationVerifier = (doc: Buffer, opts?: { now?: number }) => Atte
 
 export interface TeeVerifyInput {
   expectedPcr0: string; // hex,审计公布、可由 reproducible-build 复算
-  responseBody: Buffer; // 上游原始响应体(已剥 tee.proof + 经签名哈希证明的传输 keepalive)
+  responseBody: Buffer; // 上游原始响应体(已剥流末 proof + 经签名哈希证明的传输 keepalive)
   proof: TeeProofWire;
   // 可选(full 档):你**自己发的请求体**,用来核对请求绑定(⑥)。
   requestBody?: Buffer;
@@ -199,11 +199,14 @@ function verifySignatureCheck(t: TeeProofWire, responseBody: Buffer): TeeCheck {
   }
 }
 
-// production 流式下发:relay 原生透传的上游 SSE 字节之后附一条流末事件
-//   event: tee.proof\ndata: {json}\n\n
+// production 流式下发:relay 原生透传的上游 SSE 字节之后附一条流末 SSE 注释
+//   : tee-proof {json}\n\n
+// 注释行按 SSE 规范会被客户端解析器丢弃,不会被当成上游事件去校验。
+// 旧格式 `event: tee.proof\ndata: {json}\n\n` 仍然识别,已保存的旧响应照常可验。
 // 验证方先剥末尾 proof,再以签名哈希为闸剥记录边界 keepalive,还原飞地签名的上游原文。
-// 从末尾定位(proof 永远是最后一条事件),避免上游内容里偶现同名字串。
-export const TEE_PROOF_EVENT = 'tee.proof';
+// 从末尾定位(proof 永远是最后一条记录),避免上游内容里偶现同名字串。
+export const TEE_PROOF_COMMENT = 'tee-proof';
+export const TEE_PROOF_EVENT = 'tee.proof'; // 旧格式事件名
 // API relay transport-only comment written before the first upstream byte or
 // between complete SSE records when a slow native stream must survive proxy idle.
 // It is not part of the upstream response signed by the enclave.
@@ -211,10 +214,50 @@ export const WOKEY_SSE_TRANSPORT_KEEPALIVE_V1 = ': wokey-transport-keepalive-v1\
 
 export interface ParsedTeeProofStream {
   body: Buffer; // 上游原文(飞地签名的字节)
-  proof?: TeeProofWire; // 末尾 tee.proof 事件(无则 undefined)
+  proof?: TeeProofWire; // 末尾 tee-proof 注释或旧 tee.proof 事件(无则 undefined)
   ignoredTransportKeepaliveBytes?: number;
   ignoredTransportKeepaliveCount?: number;
   ignoredLeadingBlankBytes?: number; // 粘贴 body+proof 尾段时用户手动多加的开头空行,经 proof hash 证明后忽略
+  restoredLfLineEndings?: number; // 保存时被工具(Windows 重定向/记事本)改成 CRLF 的换行数,经 proof hash 证明后还原为 LF
+  savedFileEncoding?: SavedCaptureEncoding; // 文件被保存工具转了编码,已先转回 UTF-8 再解析(结果仍由签名哈希判定)
+}
+
+// 抓包文件的文本编码被保存工具改过:Windows PowerShell 5.1 的 `>` 重定向写 UTF-16LE(带 BOM),
+// 记事本等可能在开头加 UTF-8 BOM。上游 SSE / multipart 是不带 BOM 的 UTF-8,原样字节不可能是这两种形态,
+// 所以先转回 UTF-8 再解析不会让本应通过的响应失败;转回后是否就是签名覆盖的字节,仍由 response hash 判定。
+export type SavedCaptureEncoding = 'utf-8-bom' | 'utf-16le' | 'utf-16be';
+
+export function decodeSavedCapture(bytes: Buffer): { bytes: Buffer; encoding?: SavedCaptureEncoding } {
+  if (bytes[0] === 0xef && bytes[1] === 0xbb && bytes[2] === 0xbf) {
+    return { bytes: Buffer.from(bytes.subarray(3)), encoding: 'utf-8-bom' };
+  }
+  let encoding: 'utf-16le' | 'utf-16be' | undefined;
+  let start = 0;
+  if (bytes[0] === 0xff && bytes[1] === 0xfe) {
+    encoding = 'utf-16le';
+    start = 2;
+  } else if (bytes[0] === 0xfe && bytes[1] === 0xff) {
+    encoding = 'utf-16be';
+    start = 2;
+  } else if (looksLikeBomlessUtf16(bytes, 1)) {
+    encoding = 'utf-16le';
+  } else if (looksLikeBomlessUtf16(bytes, 0)) {
+    encoding = 'utf-16be';
+  }
+  if (!encoding) return { bytes };
+  const units = Buffer.from(bytes.subarray(start, bytes.length - ((bytes.length - start) % 2)));
+  if (encoding === 'utf-16be') units.swap16();
+  return { bytes: Buffer.from(new TextDecoder('utf-16le').decode(units), 'utf8'), encoding };
+}
+
+// 无 BOM 的 UTF-16:开头 32 个码元都是 ASCII(高字节为 0、低字节非 0)。zeroAt=1 为 LE,0 为 BE。
+function looksLikeBomlessUtf16(bytes: Buffer, zeroAt: 0 | 1): boolean {
+  if (bytes.length < 8 || bytes.length % 2 !== 0) return false;
+  const end = Math.min(bytes.length, 64);
+  for (let i = 0; i < end; i += 2) {
+    if (bytes[i + zeroAt] !== 0 || bytes[i + 1 - zeroAt] === 0) return false;
+  }
+  return true;
 }
 
 type MultipartPart = {
@@ -225,19 +268,12 @@ type MultipartPart = {
 
 export function parseTeeProofEvent(stream: string | Buffer | Uint8Array): ParsedTeeProofStream {
   const bytes = teeCaptureBytes(stream);
-  const lfMarker = Buffer.from(`event: ${TEE_PROOF_EVENT}\n`, 'utf8');
-  const crlfMarker = Buffer.from(`event: ${TEE_PROOF_EVENT}\r\n`, 'utf8');
-  const lfIdx = bytes.lastIndexOf(lfMarker);
-  const crlfIdx = bytes.lastIndexOf(crlfMarker);
-  const idx = Math.max(lfIdx, crlfIdx);
-  if (idx < 0) return { body: bytes };
-  const eventBlock = bytes.subarray(idx).toString('utf8');
-  const match = eventBlock.match(/^event: tee\.proof\r?\ndata: ([^\r\n]+)\r?\n\r?\n[\t\n\r ]*$/);
-  if (!match) return { body: bytes };
+  const located = locateTrailingTeeProof(bytes);
+  if (!located) return { body: bytes };
   try {
-    const proof = JSON.parse(match[1]) as TeeProofWire;
+    const proof = JSON.parse(located.json) as TeeProofWire;
     const normalized = removeTransportKeepalivesIfSignedHashMatches(
-      Buffer.from(bytes.subarray(0, idx)),
+      Buffer.from(bytes.subarray(0, located.offset)),
       proof,
     );
     return {
@@ -251,10 +287,38 @@ export function parseTeeProofEvent(stream: string | Buffer | Uint8Array): Parsed
   }
 }
 
+// 取流末最后一条 proof 记录:注释格式 `: tee-proof {json}` 或旧事件格式 `event: tee.proof`。
+// 两者都必须从行首开始、且之后只剩空白。
+function locateTrailingTeeProof(bytes: Buffer): { offset: number; json: string } | undefined {
+  const candidates = [
+    lastLineStart(bytes, `: ${TEE_PROOF_COMMENT} `),
+    lastLineStart(bytes, `event: ${TEE_PROOF_EVENT}\n`),
+    lastLineStart(bytes, `event: ${TEE_PROOF_EVENT}\r\n`),
+  ];
+  const offset = Math.max(...candidates);
+  if (offset < 0) return undefined;
+  const block = bytes.subarray(offset).toString('utf8');
+  // 注释格式容忍结尾缺空行(终端复制常丢尾换行);JSON 不含裸换行,其后只能是空白。
+  const match = block.match(/^: tee-proof ([^\r\n]+)[\t\n\r ]*$/)
+    ?? block.match(/^event: tee\.proof\r?\ndata: ([^\r\n]+)\r?\n\r?\n[\t\n\r ]*$/);
+  return match ? { offset, json: match[1] } : undefined;
+}
+
+function lastLineStart(bytes: Buffer, marker: string): number {
+  const needle = Buffer.from(marker, 'utf8');
+  for (let idx = bytes.lastIndexOf(needle); idx >= 0; idx = idx === 0 ? -1 : bytes.lastIndexOf(needle, idx - 1)) {
+    if (idx === 0 || bytes[idx - 1] === 0x0a || bytes[idx - 1] === 0x0d) return idx;
+  }
+  return -1;
+}
+
 export function parseTeeProofCapture(stream: string | Buffer | Uint8Array, contentType?: string): ParsedTeeProofStream {
-  const parsedSse = parseTeeProofEvent(stream);
-  if (parsedSse.proof) return parsedSse;
-  return parseTeeProofMultipartResponse(stream, contentType) ?? parsedSse;
+  const decoded = typeof stream === 'string' ? { bytes: teeCaptureBytes(stream) } : decodeSavedCapture(teeCaptureBytes(stream));
+  const withEncoding = (parsed: ParsedTeeProofStream): ParsedTeeProofStream =>
+    decoded.encoding ? { ...parsed, savedFileEncoding: decoded.encoding } : parsed;
+  const parsedSse = parseTeeProofEvent(decoded.bytes);
+  if (parsedSse.proof) return withEncoding(restoreLfLineEndingsIfSignedHashMatches(parsedSse));
+  return withEncoding(parseTeeProofMultipartResponse(decoded.bytes, contentType) ?? parsedSse);
 }
 
 export function parseTeeProofMultipartResponse(
@@ -511,6 +575,39 @@ function removeTransportKeepalivesIfSignedHashMatches(
     }
   }
   return { body };
+}
+
+// 落盘的抓包文件(不是在线代理看到的字节)常被 Windows 工具把 LF 改成 CRLF:PowerShell 的 `>` 重定向、
+// 记事本另存等。上游 SSE 只用 LF,换行只出现在记录分隔处(JSON 里的换行是转义的),所以把 CRLF 还原成 LF
+// 不改动任何事件内容;仍以签名哈希为闸,还原后对上签名覆盖的 hash 才采用,否则原样返回、照常判失败。
+function restoreLfLineEndingsIfSignedHashMatches(parsed: ParsedTeeProofStream): ParsedTeeProofStream {
+  const expected = typeof parsed.proof?.response_body_sha256 === 'string'
+    ? parsed.proof.response_body_sha256.toLowerCase()
+    : '';
+  if (!/^[a-f0-9]{64}$/.test(expected)) return parsed;
+  if (sha256(parsed.body).toString('hex') === expected) return parsed;
+  const crlf = Buffer.from('\r\n', 'utf8');
+  const parts: Buffer[] = [];
+  let copyOffset = 0;
+  let count = 0;
+  for (;;) {
+    const index = parsed.body.indexOf(crlf, copyOffset);
+    if (index < 0) break;
+    parts.push(Buffer.from(parsed.body.subarray(copyOffset, index)), Buffer.from('\n', 'utf8'));
+    copyOffset = index + 2;
+    count += 1;
+  }
+  if (count === 0) return parsed;
+  parts.push(Buffer.from(parsed.body.subarray(copyOffset)));
+  const normalized = removeTransportKeepalivesIfSignedHashMatches(Buffer.concat(parts), parsed.proof);
+  if (sha256(normalized.body).toString('hex') !== expected) return parsed;
+  return {
+    body: normalized.body,
+    proof: parsed.proof,
+    ignoredTransportKeepaliveBytes: normalized.ignoredTransportKeepaliveBytes,
+    ignoredTransportKeepaliveCount: normalized.ignoredTransportKeepaliveCount,
+    restoredLfLineEndings: count,
+  };
 }
 
 function consumeLeadingBlankLine(bytes: Buffer, offset: number): number {
