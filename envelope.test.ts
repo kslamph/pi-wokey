@@ -139,7 +139,7 @@ describe("/wokey renderer", () => {
 		for (const id of ["gpt-6.1-sol", "gpt-6-luna", "gpt-6-astra"]) expect(text).toContain(id);
 		expect(text).toContain("$0.18");          // gpt-6.1-sol / gpt-6-sol input rate
 		expect(text).toContain("$0.09");          // gpt-6-luna input rate
-		expect(text).toContain("$4.5");           // gpt-6-astra output rate
+		expect(text).toContain("$2.75");          // gpt-6-astra output rate
 		expect(text).not.toMatch(/\$0\.(?!\d)/); // a per-token rescale printed a bare "$0."
 		expect(text).not.toContain("$$");
 		expect(text).not.toContain("gpt-5.5");       // retired rows are not advertised

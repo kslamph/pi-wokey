@@ -2,9 +2,9 @@
  * The wokey.ai lineup, per route.
  *
  * The baked-in table below was reconciled against the live catalog
- * (`GET https://api.wokey.ai/v1/models`, 2026-10-03, 39 models): all eight GPT
- * ids exist, and the input/output/cache-read rates match
- * wokey.ai/models?vendor=chatgpt. Claude Opus 5.5 carries the approved metadata
+ * (`GET https://api.wokey.ai/v1/models`, 2026-11-15, 50 models; the previous full
+ * read was 2026-10-03, 39 models): rates, context windows and max output for every
+ * advertised row are taken from that read. Claude Opus 5.5 carries the approved metadata
  * from the multi-protocol design spec; its thinking map and compat flags mirror
  * pi's own generated metadata for the same model family.
  *
@@ -149,31 +149,39 @@ export type WokeyModelSpec = WokeyGptSpec | WokeyAnthropicSpec | WokeyCompletion
  */
 
 /**
- * The models this provider exposes.
+ * The default registration (what a fresh install gets).
  *
- * Only the GPT-6 generation plus Claude Opus 5.5: the older 6-sol / 5.6-* / 5.5
- * rows are superseded and carry neither a price nor a performance advantage for
- * real use, so advertising them only invites the wrong pick. They are kept in
- * `GPT_MODELS` as verified reference data (context limits, rates and probed
- * effort support are all measured), so re-enabling one is a single edit here
- * rather than a re-probe. No other Anthropic catalog result is activated.
+ * The default registration: the GPT-6.1/6 generation plus Claude Opus 5.5. The
+ * older 6-sol / 5.6-* / 5.5 rows are superseded and carry neither a price nor a
+ * performance advantage for real use, so advertising them only invites the wrong
+ * pick. They are kept in `GPT_MODELS` as verified reference data (context limits,
+ * rates and probed effort support are all measured), so re-enabling one is a
+ * single edit here rather than a re-probe.
+ *
+ * Every other Anthropic row stays opt-in through the selector; only Opus 5.5 is
+ * on by default.
  */
 const ACTIVE_MODEL_IDS = ["gpt-6.1-sol", "gpt-6-luna", "gpt-6-astra", "claude-opus-5-5"] as const;
 
 /**
  * Default registration: the verified lineup only. The Chat Completions vendors
- * (Zhipu, MiniMax, DeepSeek) are opt-in through the `/wokey models` selector —
- * their responses are unverified by design, so they stay off until chosen.
+ * (Zhipu, MiniMax, DeepSeek, Moonshot, Google, xAI) are opt-in through the
+ * `/wokey models` selector — their responses are unverified by design, so they
+ * stay off until chosen.
  */
 const DEFAULT_ENABLED_IDS = new Set<string>(ACTIVE_MODEL_IDS);
 
 export const GPT_MODELS: WokeyGptSpec[] = [
 	{ id: "gpt-6.1-sol", name: "GPT-6.1 Sol", route: "openai-codex", vendor: "OpenAI", input: 0.18, output: 0.9, cacheRead: 0.009, cacheWrite: 0.225, officialInput: 2, officialOutput: 10, contextWindow: 1_050_000, maxTokens: 128_000, reasoningEfforts: ["low", "medium", "high", "xhigh", "max"] as const, gatewayAcceptedEfforts: ["none", "minimal", "low", "medium", "high", "xhigh", "max"] as const },
+	// Added from the 2026-11-15 catalog read. Efforts come from pi's own openai
+	// catalog entry (off→none plus low…max); no gateway probe was run, so there
+	// are no `gatewayAcceptedEfforts` here.
+	{ id: "gpt-6.1-terra", name: "GPT-6.1 Terra", route: "openai-codex", vendor: "OpenAI", input: 0.1, output: 0.5, cacheRead: 0.005, cacheWrite: 0.125, officialInput: 1, officialOutput: 5, contextWindow: 1_050_000, maxTokens: 128_000, reasoningEfforts: ["none", "low", "medium", "high", "xhigh", "max"] as const },
 	{ id: "gpt-6-sol", paused: true, name: "GPT-6 Sol", route: "openai-codex", vendor: "OpenAI", input: 0.18, output: 0.9, cacheRead: 0.018, cacheWrite: 0.225, officialInput: 2, officialOutput: 10, contextWindow: 1_050_000, maxTokens: 128_000, reasoningEfforts: ["none", "low", "medium", "high", "xhigh", "max"] as const },
 	{ id: "gpt-6-luna", name: "GPT-6 Luna", route: "openai-codex", vendor: "OpenAI", input: 0.09, output: 0.45, cacheRead: 0.009, cacheWrite: 0.1125, officialInput: 0.1, officialOutput: 0.5, contextWindow: 1_050_000, maxTokens: 128_000, reasoningEfforts: ["none", "low", "medium", "high", "xhigh", "max"] as const, gatewayAcceptedEfforts: ["none", "low", "medium", "high", "xhigh", "max"] as const },
-	{ id: "gpt-6-astra", name: "GPT-6 Astra", route: "openai-codex", vendor: "OpenAI", input: 0.9, output: 4.5, cacheRead: 0.09, cacheWrite: 1.125, officialInput: 10, officialOutput: 50, contextWindow: 1_050_000, maxTokens: 128_000, reasoningEfforts: ["low", "medium", "high", "xhigh", "max"] as const, gatewayAcceptedEfforts: ["none", "minimal", "low", "medium", "high", "xhigh", "max"] as const },
+	{ id: "gpt-6-astra", name: "GPT-6 Astra", route: "openai-codex", vendor: "OpenAI", input: 0.55, output: 2.75, cacheRead: 0.055, cacheWrite: 0.6875, officialInput: 10, officialOutput: 50, contextWindow: 1_050_000, maxTokens: 128_000, reasoningEfforts: ["low", "medium", "high", "xhigh", "max"] as const, gatewayAcceptedEfforts: ["none", "minimal", "low", "medium", "high", "xhigh", "max"] as const },
 	{ id: "gpt-5.6-sol", paused: true, name: "GPT-5.6 Sol", route: "openai-codex", vendor: "OpenAI", input: 0.44, output: 2.2, cacheRead: 0.044, cacheWrite: 0.55, officialInput: 4, officialOutput: 20, contextWindow: 1_050_000, maxTokens: 128_000, reasoningEfforts: ["none", "minimal", "low", "medium", "high", "xhigh", "max"] as const },
-	{ id: "gpt-5.6-terra", name: "GPT-5.6 Terra", route: "openai-codex", vendor: "OpenAI", input: 0.2, output: 1.2, cacheRead: 0.02, cacheWrite: 0.25, officialInput: 2, officialOutput: 12, contextWindow: 1_050_000, maxTokens: 128_000, reasoningEfforts: ["none", "low", "medium", "high", "xhigh", "max"] as const },
+	{ id: "gpt-5.6-terra", paused: true, name: "GPT-5.6 Terra", route: "openai-codex", vendor: "OpenAI", input: 0.2, output: 1.2, cacheRead: 0.02, cacheWrite: 0.25, officialInput: 2, officialOutput: 12, contextWindow: 1_050_000, maxTokens: 128_000, reasoningEfforts: ["none", "low", "medium", "high", "xhigh", "max"] as const },
 	{ id: "gpt-5.6-luna", paused: true, name: "GPT-5.6 Luna", route: "openai-codex", vendor: "OpenAI", input: 0.12, output: 0.72, cacheRead: 0.012, cacheWrite: 0.15, officialInput: 0.2, officialOutput: 1.2, contextWindow: 1_050_000, maxTokens: 128_000, reasoningEfforts: ["none", "minimal", "low", "medium", "high", "xhigh", "max"] as const },
 	{ id: "gpt-5.5", paused: true, name: "GPT-5.5", route: "openai-codex", vendor: "OpenAI", input: 0.5, output: 3, cacheRead: 0.05, cacheWrite: 0, officialInput: 5, officialOutput: 30, contextWindow: 1_050_000, maxTokens: 128_000, reasoningEfforts: ["none", "low", "medium", "high", "xhigh"] as const },
 ];
@@ -209,9 +217,9 @@ const CLAUDE_OPUS_5_5: WokeyAnthropicSpec = {
 };
 
 /**
- * Chat Completions vendors: Zhipu, MiniMax, DeepSeek.
+ * Chat Completions vendors: Zhipu, MiniMax, DeepSeek, Moonshot, Google, xAI.
  *
- * All three speak OpenAI Chat Completions through Wokey (GLM also speaks
+ * All of them speak OpenAI Chat Completions through Wokey (GLM also speaks
  * Messages, but one shared route keeps this to a single adapter until live use
  * proves Messages drives GLM better — switching is a one-field `route` change).
  * Thinking maps and compat are borrowed from pi's own built-in providers for
@@ -226,7 +234,7 @@ const CLAUDE_OPUS_5_5: WokeyAnthropicSpec = {
 export const COMPLETIONS_MODELS: WokeyCompletionsSpec[] = [
 	{
 		id: "glm-5.3", name: "GLM-5.3", route: "openai-chat", vendor: "Zhipu",
-		input: 0.28, output: 0.88, cacheRead: 0.052, cacheWrite: 0, contextWindow: 1_000_000, maxTokens: 131_072,
+		input: 0.21, output: 0.66, cacheRead: 0.039, cacheWrite: 0, contextWindow: 1_000_000, maxTokens: 131_072,
 		inputModalities: ["text"],
 		thinkingLevelMap: { off: null, minimal: null, low: "low", medium: null, high: "high", xhigh: null, max: "max" },
 		compat: { supportsStore: false, supportsDeveloperRole: false, supportsReasoningEffort: true, maxTokensField: "max_tokens", thinkingFormat: "zai", supportsStrictMode: true, zaiToolStream: true },
@@ -241,7 +249,7 @@ export const COMPLETIONS_MODELS: WokeyCompletionsSpec[] = [
 	},
 	{
 		id: "MiniMax-M3", name: "MiniMax M3", route: "openai-chat", vendor: "MiniMax",
-		input: 0.09, output: 0.36, cacheRead: 0.018, cacheWrite: 0, contextWindow: 1_000_000, maxTokens: 80_000,
+		input: 0.135, output: 0.54, cacheRead: 0.027, cacheWrite: 0, contextWindow: 1_000_000, maxTokens: 80_000,
 		inputModalities: ["text"],
 		// M3 thinks, but it has no effort vocabulary: models.dev's `minimax` and
 		// `minimax-cn` entries both say reasoning_options [{type:"toggle"}], and
@@ -254,7 +262,17 @@ export const COMPLETIONS_MODELS: WokeyCompletionsSpec[] = [
 		compat: { supportsStore: false, supportsDeveloperRole: false, supportsStrictMode: true, maxTokensField: "max_tokens" },
 	},
 	{
-		id: "deepseek-v4-flash", name: "DeepSeek V4 Flash", route: "openai-chat", vendor: "DeepSeek",
+		// 2026-11-15 catalog: cheaper than M3 ($0.09 vs $0.135 prompt) with a much
+		// larger max output. No pi entry, so the toggle-only map and the gateway
+		// compat are borrowed from M3 above.
+		id: "MiniMax-M3.1-Flash", name: "MiniMax M3.1 Flash", route: "openai-chat", vendor: "MiniMax",
+		input: 0.09, output: 0.36, cacheRead: 0.009, cacheWrite: 0, contextWindow: 1_000_000, maxTokens: 524_288,
+		inputModalities: ["text", "image"],
+		thinkingLevelMap: { minimal: null, low: null, medium: null, high: "high", xhigh: null, max: null },
+		compat: { supportsStore: false, supportsDeveloperRole: false, supportsStrictMode: true, maxTokensField: "max_tokens" },
+	},
+	{
+		id: "deepseek-v4-flash", paused: true, name: "DeepSeek V4 Flash", route: "openai-chat", vendor: "DeepSeek",
 		input: 0.112, output: 0.448, cacheRead: 0.00224, cacheWrite: 0, contextWindow: 1_000_000, maxTokens: 384_000,
 		inputModalities: ["text"],
 		// `off` is left unstated on purpose: DeepSeek thinks on a toggle
@@ -277,16 +295,80 @@ export const COMPLETIONS_MODELS: WokeyCompletionsSpec[] = [
 		compat: { supportsStore: false, supportsDeveloperRole: false, supportsStrictMode: true, maxTokensField: "max_tokens", requiresReasoningContentOnAssistantMessages: true, thinkingFormat: "deepseek" },
 	},
 	{
-		// Sourced via OpenCode Go (owned_by opencode), not the volcengine-direct
-		// rows above — same family metadata from pi's deepseek entry. Baked rate
-		// is the current off-peak readout; the live catalog overlay moves it.
-		id: "deepseek-flash", name: "DeepSeek V4.1 Flash", route: "openai-chat", vendor: "DeepSeek",
-		input: 0.112, output: 0.448, cacheRead: 0.00224, cacheWrite: 0, contextWindow: 1_000_000, maxTokens: 393_216,
+		// The 2026-11-15 catalog retired the wokey id `deepseek-flash`; the model
+		// is served as `deepseek-v4.1-flash`, which is also what pi's opencode row
+		// calls it. Baked rate is the current off-peak readout (lower than the
+		// retired V4 Flash); the live catalog overlay keeps it current.
+		id: "deepseek-v4.1-flash", name: "DeepSeek V4.1 Flash", route: "openai-chat", vendor: "DeepSeek",
+		input: 0.075, output: 0.3, cacheRead: 0.0015, cacheWrite: 0, contextWindow: 1_000_000, maxTokens: 393_216,
 		inputModalities: ["text", "image"],
-		// pi carries this one as `deepseek-v4.1-flash`; the wokey id differs, the
-		// effort ladder does not. `off` unstated, as on the V4 rows above.
+		// `off` unstated, as on the V4 rows above.
 		thinkingLevelMap: { minimal: null, low: "low", medium: null, high: "high", xhigh: null, max: "max" },
 		compat: { supportsStore: false, supportsDeveloperRole: false, supportsStrictMode: true, maxTokensField: "max_tokens", requiresReasoningContentOnAssistantMessages: true, thinkingFormat: "deepseek" },
+	},
+	// ── Moonshot ────────────────────────────────────────────────
+	{
+		// 2026-11-15 catalog. pi's opencode rows carry this family's metadata: a
+		// single `max` level (every other level hidden, `off` too) and the
+		// gateway compat fields.
+		id: "kimi-k3", name: "Kimi K3", route: "openai-chat", vendor: "Moonshot",
+		input: 0.6, output: 3, cacheRead: 0.06, cacheWrite: 0, contextWindow: 1_048_576, maxTokens: 1_048_576,
+		inputModalities: ["text", "image"],
+		thinkingLevelMap: { off: null, minimal: null, low: null, medium: null, high: null, xhigh: null, max: "max" },
+		compat: { supportsStore: false, supportsDeveloperRole: false, supportsStrictMode: true, maxTokensField: "max_tokens", supportsMidConvoSystemMessages: true, supportsMidConvoToolAdditions: true },
+	},
+	{
+		// No pi entry for 3.1 Pro: same family map and compat as K3 (flagged).
+		id: "kimi-k3.1-pro", name: "Kimi K3.1 Pro", route: "openai-chat", vendor: "Moonshot",
+		input: 0.8, output: 4, cacheRead: 0.08, cacheWrite: 0, contextWindow: 1_048_576, maxTokens: 1_048_576,
+		inputModalities: ["text", "image"],
+		thinkingLevelMap: { off: null, minimal: null, low: null, medium: null, high: null, xhigh: null, max: "max" },
+		compat: { supportsStore: false, supportsDeveloperRole: false, supportsStrictMode: true, maxTokensField: "max_tokens", supportsMidConvoSystemMessages: true, supportsMidConvoToolAdditions: true },
+	},
+	// ── Google ────────────────────────────────────────────────
+	{
+		// 2026-11-15 catalog, all on the same Chat Completions route. Ladder and
+		// `off: null` come from pi's google entries; the gateway compat fields are
+		// the generic ones (pi has no completions entry for these ids).
+		id: "gemini-3.8-flash", name: "Gemini 3.8 Flash", route: "openai-chat", vendor: "Google",
+		input: 0.3, output: 1.5, cacheRead: 0.03, cacheWrite: 0, contextWindow: 1_000_000, maxTokens: 65_536,
+		inputModalities: ["text", "image"],
+		thinkingLevelMap: { off: null, minimal: null, low: "low", medium: "medium", high: "high", xhigh: null, max: null },
+		compat: { supportsStore: false, supportsDeveloperRole: false, supportsStrictMode: true, maxTokensField: "max_tokens" },
+	},
+	{
+		// Same ladder as 3.8 Flash; no pi entry of its own (family borrow).
+		id: "gemini-4-hydrogen", name: "Gemini 4 Hydrogen", route: "openai-chat", vendor: "Google",
+		input: 0.3, output: 1.5, cacheRead: 0.015, cacheWrite: 0, contextWindow: 1_048_576, maxTokens: 65_536,
+		inputModalities: ["text", "image"],
+		thinkingLevelMap: { off: null, minimal: null, low: "low", medium: "medium", high: "high", xhigh: null, max: null },
+		compat: { supportsStore: false, supportsDeveloperRole: false, supportsStrictMode: true, maxTokensField: "max_tokens" },
+	},
+	{
+		// pi charts this id under opencode/google; ladder is the 4.x one.
+		id: "gemini-4-argon", name: "Gemini 4 Argon", route: "openai-chat", vendor: "Google",
+		input: 1.2, output: 6, cacheRead: 0.06, cacheWrite: 0, contextWindow: 1_048_576, maxTokens: 65_536,
+		inputModalities: ["text", "image"],
+		thinkingLevelMap: { off: null, minimal: null, low: "low", medium: "medium", high: "high", xhigh: null, max: null },
+		compat: { supportsStore: false, supportsDeveloperRole: false, supportsStrictMode: true, maxTokensField: "max_tokens" },
+	},
+	{
+		// Price-identical to Argon (catalog); kept because both were requested.
+		id: "gemini-4-carbon", name: "Gemini 4 Carbon", route: "openai-chat", vendor: "Google",
+		input: 1.2, output: 6, cacheRead: 0.06, cacheWrite: 0, contextWindow: 1_048_576, maxTokens: 65_536,
+		inputModalities: ["text", "image"],
+		thinkingLevelMap: { off: null, minimal: null, low: "low", medium: "medium", high: "high", xhigh: null, max: null },
+		compat: { supportsStore: false, supportsDeveloperRole: false, supportsStrictMode: true, maxTokensField: "max_tokens" },
+	},
+	// ── xAI ────────────────────────────────────────────────
+	{
+		// 2026-11-15 catalog. pi charts this id under opencode/opencode-go:
+		// low…xhigh, with `off` and `max` hidden.
+		id: "grok-4.7", name: "Grok 4.7", route: "openai-chat", vendor: "xAI",
+		input: 0.28, output: 0.84, cacheRead: 0.07, cacheWrite: 0, contextWindow: 500_000, maxTokens: 500_000,
+		inputModalities: ["text", "image"],
+		thinkingLevelMap: { off: null, minimal: null, low: "low", medium: "medium", high: "high", xhigh: "xhigh", max: null },
+		compat: { supportsStore: false, supportsDeveloperRole: false, supportsStrictMode: true, maxTokensField: "max_tokens" },
 	},
 ];
 
@@ -338,7 +420,7 @@ export const CLAUDE_MODELS: WokeyAnthropicSpec[] = [
 		// No pi entry anywhere for this id: mirrors Sonnet 5's effort ladder
 		// (flagged here so a wrong guess is easy to find).
 		id: "claude-sonnet-5-5", name: "Claude Sonnet 5.5", route: "anthropic-direct", vendor: "Anthropic",
-		input: 0.3, output: 1.5, cacheRead: 0.03, cacheWrite: 0.375, contextWindow: 1_000_000, maxTokens: 128_000,
+		input: 0.3, output: 1.5, cacheRead: 0.015, cacheWrite: 0.375, contextWindow: 1_000_000, maxTokens: 128_000,
 		inputModalities: ["text", "image"],
 		thinkingLevelMap: { minimal: null, low: "low", medium: "medium", high: "high", xhigh: "xhigh", max: "max" },
 		compat: { forceAdaptiveThinking: true, supportsStrictTools: true },
@@ -364,13 +446,32 @@ export const CLAUDE_MODELS: WokeyAnthropicSpec[] = [
 		compat: { supportsStrictTools: true },
 	},
 	{
+		id: "claude-haiku-5-5", name: "Claude Haiku 5.5", route: "anthropic-direct", vendor: "Anthropic",
+		input: 0.08, output: 0.4, cacheRead: 0.008, cacheWrite: 0.1, contextWindow: 1_000_000, maxTokens: 128_000,
+		inputModalities: ["text", "image"],
+		// pi's native-anthropic entry for this id hides `minimal` and leaves `off`
+		// absent (thinking can be turned off); the managed-effort flags are its
+		// full set for the 5.x Haiku family.
+		thinkingLevelMap: { minimal: null, low: "low", medium: "medium", high: "high", xhigh: "xhigh", max: "max" },
+		compat: { supportsMidConvoEffort: true, supportsMidConvoSystemMessages: true, supportsMidConvoToolChanges: true, forceAdaptiveThinking: true, supportsTemperature: false, supportsStrictTools: true },
+	},
+	{
 		id: "claude-haiku-4-5", paused: true, name: "Claude Haiku 4.5", route: "anthropic-direct", vendor: "Anthropic",
 		input: 0.2, output: 1.0, cacheRead: 0.02, cacheWrite: 0.25, contextWindow: 200_000, maxTokens: 64_000,
 		inputModalities: ["text"],
 		compat: { supportsStrictTools: true },
 	},
 	{
-		id: "claude-fable-5-1", name: "Claude Fable 5.1", route: "anthropic-direct", vendor: "Anthropic",
+		// No pi entry for 5.2: same family ladder and managed-effort flags as
+		// Fable 5.1 (flagged here so a wrong guess is easy to find).
+		id: "claude-fable-5-2", name: "Claude Fable 5.2", route: "anthropic-direct", vendor: "Anthropic",
+		input: 1.912, output: 9.56, cacheRead: 0.0478, cacheWrite: 2.39, contextWindow: 1_000_000, maxTokens: 128_000,
+		inputModalities: ["text", "image"],
+		thinkingLevelMap: { off: null, minimal: null, low: "low", medium: "medium", high: "high", xhigh: "xhigh", max: "max" },
+		compat: { supportsMidConvoEffort: true, supportsMidConvoSystemMessages: true, supportsMidConvoToolChanges: true, forceAdaptiveThinking: true, supportsStrictTools: true },
+	},
+	{
+		id: "claude-fable-5-1", paused: true, name: "Claude Fable 5.1", route: "anthropic-direct", vendor: "Anthropic",
 		input: 2.39, output: 11.95, cacheRead: 0.05975, cacheWrite: 2.9875, contextWindow: 1_000_000, maxTokens: 128_000,
 		inputModalities: ["text", "image"],
 		thinkingLevelMap: { off: null, minimal: null, low: "low", medium: "medium", high: "high", xhigh: "xhigh", max: "max" },

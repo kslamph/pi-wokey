@@ -361,10 +361,10 @@ describe("active lineup", () => {
 
 describe("full Claude lineup", () => {
 	// Price-advantaged rows only: dominated siblings (Opus 5/4.x, Sonnet 5/4.x,
-	// Haiku 4.5, Fable 5) stay in CLAUDE_MODELS as paused reference data.
-	const ids = ["claude-opus-5-5", "claude-sonnet-5-5", "claude-fable-5-1"];
+	// Haiku 4.5, Fable 5.1) stay in CLAUDE_MODELS as paused reference data.
+	const ids = ["claude-opus-5-5", "claude-sonnet-5-5", "claude-haiku-5-5", "claude-fable-5-2"];
 
-	it("lists the three kept Claude rows for the selector on the verified Messages route", () => {
+	it("lists the four kept Claude rows for the selector on the verified Messages route", () => {
 		const specs = allSpecs().filter((s) => s.vendor === "Anthropic");
 		expect(specs.map((s) => s.id)).toEqual(ids);
 		for (const s of specs) expect(s.route).toBe("anthropic-direct");
@@ -388,26 +388,35 @@ describe("full Claude lineup", () => {
 		const byId = Object.fromEntries(allSpecs().map((s) => [s.id, toModel(s)]));
 		expect(byId["claude-opus-5-5"]!.input).toEqual(["text", "image"]);
 		expect(byId["claude-sonnet-5-5"]!.input).toEqual(["text", "image"]);
-		expect(byId["claude-fable-5-1"]!.input).toEqual(["text", "image"]);
+		expect(byId["claude-haiku-5-5"]!.input).toEqual(["text", "image"]);
+		expect(byId["claude-fable-5-2"]!.input).toEqual(["text", "image"]);
 	});
 
 	it("carries Wokey's rates with the 5m cache-write convention", () => {
 		const byId = Object.fromEntries(allSpecs().map((s) => [s.id, toModel(s)]));
-		expect(byId["claude-fable-5-1"]!.cost).toMatchObject({ input: 2.39, output: 11.95, cacheRead: 0.05975, cacheWrite: 2.9875 });
+		expect(byId["claude-fable-5-2"]!.cost).toMatchObject({ input: 1.912, output: 9.56, cacheRead: 0.0478, cacheWrite: 2.39 });
+		expect(byId["claude-haiku-5-5"]!.cost).toMatchObject({ input: 0.08, output: 0.4, cacheRead: 0.008, cacheWrite: 0.1 });
 	});
 });
 
-describe("chat-completions vendors", () => {	it("lists Zhipu, MiniMax and DeepSeek rows for the selector, verified lineup first", () => {
+describe("chat-completions vendors", () => {	it("lists the Zhipu, MiniMax, DeepSeek, Moonshot, Google and xAI rows, verified lineup first", () => {
 		const ids = allSpecs().map((s) => s.id);
-		for (const id of ["glm-5.3", "glm-5.3-flash", "MiniMax-M3", "deepseek-v4-flash", "deepseek-v4-pro", "deepseek-flash"]) {
+		for (const id of ["glm-5.3", "glm-5.3-flash", "MiniMax-M3", "MiniMax-M3.1-Flash", "deepseek-v4.1-flash", "deepseek-v4-pro", "kimi-k3", "kimi-k3.1-pro", "gemini-3.8-flash", "gemini-4-argon", "gemini-4-carbon", "gemini-4-hydrogen", "grok-4.7"]) {
 			expect(ids).toContain(id);
 		}
+		// Removed from the lineup: the retired V4 Flash and its dead `deepseek-flash` id.
+		expect(ids).not.toContain("deepseek-v4-flash");
+		expect(ids).not.toContain("deepseek-flash");
 		// Verified lineup stays ahead of the opt-in vendors.
 		expect(ids.indexOf("claude-opus-5-5")).toBeLessThan(ids.indexOf("glm-5.3"));
 		const vendors = Object.fromEntries(allSpecs().map((s) => [s.id, s.vendor]));
 		expect(vendors["glm-5.3-flash"]).toBe("Zhipu");
 		expect(vendors["MiniMax-M3"]).toBe("MiniMax");
+		expect(vendors["MiniMax-M3.1-Flash"]).toBe("MiniMax");
 		expect(vendors["deepseek-v4-pro"]).toBe("DeepSeek");
+		expect(vendors["kimi-k3"]).toBe("Moonshot");
+		expect(vendors["gemini-4-argon"]).toBe("Google");
+		expect(vendors["grok-4.7"]).toBe("xAI");
 	});
 
 	it("resolves GLM to openai-completions with pi's zai thinking map and compat", () => {
@@ -465,14 +474,27 @@ describe("chat-completions vendors", () => {	it("lists Zhipu, MiniMax and DeepSe
 		}
 	});
 
-	it("resolves the opencode-routed V4.1 Flash with pi's deepseek metadata", () => {
-		const model = toModel(allSpecs().find((s) => s.id === "deepseek-flash")!);
+	it("resolves DeepSeek V4.1 Flash with pi's deepseek metadata", () => {
+		const model = toModel(allSpecs().find((s) => s.id === "deepseek-v4.1-flash")!);
 		expect(model.api).toBe("openai-completions");
 		expect(model.baseUrl).toBe("https://api.wokey.ai/v1");
 		expect(model.thinkingLevelMap).toEqual({ minimal: null, low: "low", medium: null, high: "high", xhigh: null, max: "max" });
 		expect(model.compat).toMatchObject({ thinkingFormat: "deepseek", requiresReasoningContentOnAssistantMessages: true });
-		expect(model.cost).toMatchObject({ input: 0.112, output: 0.448 });
+		expect(model.cost).toMatchObject({ input: 0.075, output: 0.3 });
 		expect(model.maxTokens).toBe(393_216);
+	});
+
+	it("resolves the new vendors to openai-completions with their family thinking maps", () => {
+		const byId = Object.fromEntries(allSpecs().map((s) => [s.id, toModel(s)]));
+		for (const id of ["kimi-k3", "kimi-k3.1-pro", "gemini-3.8-flash", "gemini-4-hydrogen", "gemini-4-argon", "gemini-4-carbon", "grok-4.7", "MiniMax-M3.1-Flash"]) {
+			expect(byId[id]!.api, id).toBe("openai-completions");
+			expect(byId[id]!.baseUrl, id).toBe("https://api.wokey.ai/v1");
+			expect(byId[id]!.input, id).toEqual(["text", "image"]);
+		}
+		// Kimi publishes one level; Gemini low…high; Grok low…xhigh.
+		expect(getSupportedThinkingLevels(byId["kimi-k3"]! as never)).toEqual(["max"]);
+		expect(getSupportedThinkingLevels(byId["gemini-3.8-flash"]! as never)).toEqual(["low", "medium", "high"]);
+		expect(getSupportedThinkingLevels(byId["grok-4.7"]! as never)).toEqual(["low", "medium", "high", "xhigh"]);
 	});
 });
 
@@ -516,13 +538,17 @@ describe("thinking levels", () => {
 	 * generated from), both read 2026-10-17. The vendor-owned `reasoning_options`
 	 * per model:
 	 *
-	 *   anthropic  Opus 5.5 / 5 / 4.8 / 4.7, Sonnet 5.5 / 5, Fable 5.1 / 5 → low…max
+	 *   anthropic  Opus 5.5 / 5 / 4.8 / 4.7, Sonnet 5.5 / 5, Fable 5.2 / 5.1 / 5 → low…max
 	 *              Opus 4.6, Sonnet 4.6                                  → low…high + max (no xhigh)
 	 *              Sonnet 4.5, Haiku 4.5                                  → budget_tokens only
+	 *              Haiku 5.5                                              → low…max, off available
 	 *   zai        GLM-5.3, GLM-5.3-Flash                                 → low, high, max
 	 *   deepseek   V4 Flash / V4.1 Flash                                  → toggle + low, high, max
 	 *              V4 Pro                                                   → toggle + high, max
-	 *   minimax    M3                                                      → toggle only, no effort
+	 *   minimax    M3, M3.1 Flash                                          → toggle only, no effort
+	 *   moonshot   Kimi K3, K3.1 Pro                                        → max only
+	 *   google     Gemini 3.8 Flash, 4 Hydrogen / Argon / Carbon           → low, medium, high
+	 *   xai        Grok 4.7                                                 → low, medium, high, xhigh
 	 *
 	 * `off` appears wherever the model can think on demand instead of always:
 	 * it is hidden only where pi always sends `output_config.effort`
@@ -532,6 +558,7 @@ describe("thinking levels", () => {
 	 */
 	const LEVELS: Record<string, string[]> = {
 		"gpt-6.1-sol": ["low", "medium", "high", "xhigh", "max"],
+		"gpt-6.1-terra": ["off", "low", "medium", "high", "xhigh", "max"],
 		"gpt-6-luna": ["off", "low", "medium", "high", "xhigh", "max"],
 		"gpt-6-astra": ["low", "medium", "high", "xhigh", "max"],
 		"claude-opus-5-5": ["low", "medium", "high", "xhigh", "max"],
@@ -546,14 +573,24 @@ describe("thinking levels", () => {
 		// budgets, so they keep pi's own default and carry no map here.
 		"claude-sonnet-4-5": ["off", "minimal", "low", "medium", "high"],
 		"claude-haiku-4-5": ["off", "minimal", "low", "medium", "high"],
+		"claude-haiku-5-5": ["off", "low", "medium", "high", "xhigh", "max"],
+		"claude-fable-5-2": ["low", "medium", "high", "xhigh", "max"],
 		"claude-fable-5-1": ["low", "medium", "high", "xhigh", "max"],
 		"claude-fable-5": ["low", "medium", "high", "xhigh", "max"],
 		"glm-5.3": ["low", "high", "max"],
 		"glm-5.3-flash": ["low", "high", "max"],
 		"MiniMax-M3": ["off", "high"],
+		"MiniMax-M3.1-Flash": ["off", "high"],
 		"deepseek-v4-flash": ["off", "low", "high", "max"],
 		"deepseek-v4-pro": ["off", "high", "max"],
-		"deepseek-flash": ["off", "low", "high", "max"],
+		"deepseek-v4.1-flash": ["off", "low", "high", "max"],
+		"kimi-k3": ["max"],
+		"kimi-k3.1-pro": ["max"],
+		"gemini-3.8-flash": ["low", "medium", "high"],
+		"gemini-4-hydrogen": ["low", "medium", "high"],
+		"gemini-4-argon": ["low", "medium", "high"],
+		"gemini-4-carbon": ["low", "medium", "high"],
+		"grok-4.7": ["low", "medium", "high", "xhigh"],
 	};
 
 	it("offers every row exactly the levels its vendor supports", () => {

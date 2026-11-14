@@ -63,8 +63,9 @@ Four models are registered by default:
 | `gpt-6-astra` | OpenAI | Codex Responses | verified |
 | `claude-opus-5-5` | Anthropic | Anthropic Messages | verified |
 
-Additional GPT and Claude models, plus the Zhipu / MiniMax / DeepSeek chat models, are
-available in `/wokey models`. The chat models are opt-in because wokey publishes proofs
+Additional GPT and Claude models, plus the Zhipu / MiniMax / DeepSeek / Moonshot /
+Google / xAI chat models, are available in `/wokey models`. The chat models are opt-in
+because wokey publishes proofs
 for the official Codex Responses and Anthropic Messages routes only — their exchanges are
 recorded as unattested by design and never warn.
 

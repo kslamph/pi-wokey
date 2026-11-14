@@ -298,7 +298,7 @@ export function renderModels(): string {
 	}
 	out.push("", `Select one with /model, e.g.  /model wokey/gpt-6-luna:high`);
 	out.push("Pick the lineup in /wokey → Models. Rates are re-read from GET /v1/models on every startup and every time /wokey opens, and each turn is priced at the current catalog rate (wokey uses dynamic_discount).");
-	out.push("Zhipu/MiniMax/DeepSeek rows are unverified by design — Wokey ships no proofs for them, and they never warn.");
+	out.push("Chat-completions rows (Zhipu, MiniMax, DeepSeek, Moonshot, Google, xAI) are unverified by design — Wokey ships no proofs for them, and they never warn.");
 	return out.join("\n");
 }
 

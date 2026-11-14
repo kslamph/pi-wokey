@@ -184,7 +184,7 @@ describe("/wokey in-TUI panels", () => {
 	it("renders Models as vendor tabs opening on the first vendor's lineup", async () => {
 		const text = (await renderPanel(["models"])).join("\n");
 		for (const id of ["gpt-6.1-sol", "gpt-6-luna", "gpt-6-astra"]) expect(text).toContain(id);
-		for (const vendor of ["OpenAI", "Anthropic", "Zhipu", "MiniMax", "DeepSeek"]) expect(text).toContain(vendor);
+		for (const vendor of ["OpenAI", "Anthropic", "Zhipu", "MiniMax", "DeepSeek", "Moonshot", "Google", "xAI"]) expect(text).toContain(vendor);
 		// Other vendors wait behind their tabs — one vendor per view.
 		expect(text).not.toContain("claude-opus-5-5");
 		expect(text).not.toContain("r refresh now"); // models has no refresh action
@@ -200,7 +200,7 @@ describe("/wokey in-TUI panels", () => {
 		panel.handleInput("\x1b[C"); // → MiniMax
 		panel.handleInput("\x1b[C"); // → DeepSeek
 		text = panel.render(100).join("\n");
-		expect(text).toContain("deepseek-v4-flash");
+		expect(text).toContain("deepseek-v4.1-flash");
 		expect(text).toContain("[unverified]");
 		panel.handleInput("\x1b[D"); // ← back to MiniMax
 		text = panel.render(100).join("\n");
@@ -214,7 +214,7 @@ describe("/wokey in-TUI panels", () => {
 		await runMenu(deps({ saveModels }), ["models"], ctx as never);
 		const make = factory() as (t: unknown, th: unknown, kb: unknown, done: (v?: unknown) => void) => Panel;
 		const panel = make(tui, theme, {}, done);
-		// deps() pre-checks gpt-6-luna only: move to it, uncheck it, move to astra, check it.
+		// deps() pre-checks gpt-6-luna only: move to terra, check it, move to luna, uncheck it.
 		panel.handleInput("\x1b[B");
 		panel.handleInput(" ");
 		panel.handleInput("\x1b[B");
@@ -223,7 +223,7 @@ describe("/wokey in-TUI panels", () => {
 		// saveModels runs before the panel closes.
 		await new Promise((r) => setTimeout(r, 0));
 		expect(saveModels).toHaveBeenCalledOnce();
-		expect(saveModels.mock.calls[0]![0]).toEqual(["gpt-6-astra"]);
+		expect(saveModels.mock.calls[0]![0]).toEqual(["gpt-6.1-terra"]);
 		expect(done).toHaveBeenCalledOnce();
 	});
 
@@ -499,7 +499,7 @@ describe("/wokey mixed-model lineup", () => {
 		panel.handleInput("\x1b[C"); // → MiniMax
 		panel.handleInput("\x1b[C"); // → DeepSeek
 		const deepseek = panel.render(100).join("\n");
-		expect(deepseek).toMatch(/deepseek-v4-flash.*\$0\.112.*\$0\.448/);
+		expect(deepseek).toMatch(/deepseek-v4\.1-flash.*\$0\.075.*\$0\.3/);
 		expect(deepseek).toContain("[unverified]");
 	});
 });
