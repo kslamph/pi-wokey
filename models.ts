@@ -172,6 +172,9 @@ const ACTIVE_MODEL_IDS = ["gpt-6.1-sol", "gpt-6-luna", "gpt-6-astra", "claude-op
 const DEFAULT_ENABLED_IDS = new Set<string>(ACTIVE_MODEL_IDS);
 
 export const GPT_MODELS: WokeyGptSpec[] = [
+	// Opt-in: rates and limits from Wokey's model pages; efforts match pi's OpenAI catalog.
+	{ id: "gpt-6.2-sol", name: "GPT-6.2 Sol", route: "openai-codex", vendor: "OpenAI", input: 0.18, output: 0.9, cacheRead: 0.009, cacheWrite: 0.225, officialInput: 2, officialOutput: 10, contextWindow: 1_050_000, maxTokens: 128_000, reasoningEfforts: ["low", "medium", "high", "xhigh", "max"] as const },
+	{ id: "gpt-6.2-astra", name: "GPT-6.2 Astra", route: "openai-codex", vendor: "OpenAI", input: 0.548, output: 2.74, cacheRead: 0.0274, cacheWrite: 0.685, officialInput: 8, officialOutput: 40, contextWindow: 1_050_000, maxTokens: 128_000, reasoningEfforts: ["low", "medium", "high", "xhigh", "max"] as const },
 	{ id: "gpt-6.1-sol", name: "GPT-6.1 Sol", route: "openai-codex", vendor: "OpenAI", input: 0.18, output: 0.9, cacheRead: 0.009, cacheWrite: 0.225, officialInput: 2, officialOutput: 10, contextWindow: 1_050_000, maxTokens: 128_000, reasoningEfforts: ["low", "medium", "high", "xhigh", "max"] as const, gatewayAcceptedEfforts: ["none", "minimal", "low", "medium", "high", "xhigh", "max"] as const },
 	// Added from the 2026-11-15 catalog read. Efforts come from pi's own openai
 	// catalog entry (off→none plus low…max); no gateway probe was run, so there

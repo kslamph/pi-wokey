@@ -184,6 +184,7 @@ describe("/wokey in-TUI panels", () => {
 	it("renders Models as vendor tabs opening on the first vendor's lineup", async () => {
 		const text = (await renderPanel(["models"])).join("\n");
 		for (const id of ["gpt-6.1-sol", "gpt-6-luna", "gpt-6-astra"]) expect(text).toContain(id);
+		for (const id of ["gpt-6.2-sol", "gpt-6.2-astra"]) expect(text).toContain(`[ ] ${id}`);
 		for (const vendor of ["OpenAI", "Anthropic", "Zhipu", "MiniMax", "DeepSeek", "Moonshot", "Google", "xAI"]) expect(text).toContain(vendor);
 		// Other vendors wait behind their tabs — one vendor per view.
 		expect(text).not.toContain("claude-opus-5-5");
@@ -214,8 +215,7 @@ describe("/wokey in-TUI panels", () => {
 		await runMenu(deps({ saveModels }), ["models"], ctx as never);
 		const make = factory() as (t: unknown, th: unknown, kb: unknown, done: (v?: unknown) => void) => Panel;
 		const panel = make(tui, theme, {}, done);
-		// deps() pre-checks gpt-6-luna only: move to terra, check it, move to luna, uncheck it.
-		panel.handleInput("\x1b[B");
+		// Check both new models without changing the existing GPT-6 Luna selection.
 		panel.handleInput(" ");
 		panel.handleInput("\x1b[B");
 		panel.handleInput(" ");
@@ -223,7 +223,7 @@ describe("/wokey in-TUI panels", () => {
 		// saveModels runs before the panel closes.
 		await new Promise((r) => setTimeout(r, 0));
 		expect(saveModels).toHaveBeenCalledOnce();
-		expect(saveModels.mock.calls[0]![0]).toEqual(["gpt-6.1-terra"]);
+		expect(saveModels.mock.calls[0]![0]).toEqual(["gpt-6-luna", "gpt-6.2-sol", "gpt-6.2-astra"]);
 		expect(done).toHaveBeenCalledOnce();
 	});
 

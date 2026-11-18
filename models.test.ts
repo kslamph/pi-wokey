@@ -557,6 +557,8 @@ describe("thinking levels", () => {
 	 * minimal, and pi's own Opus 5.5 entry already nulls it.
 	 */
 	const LEVELS: Record<string, string[]> = {
+		"gpt-6.2-sol": ["low", "medium", "high", "xhigh", "max"],
+		"gpt-6.2-astra": ["low", "medium", "high", "xhigh", "max"],
 		"gpt-6.1-sol": ["low", "medium", "high", "xhigh", "max"],
 		"gpt-6.1-terra": ["off", "low", "medium", "high", "xhigh", "max"],
 		"gpt-6-luna": ["off", "low", "medium", "high", "xhigh", "max"],
