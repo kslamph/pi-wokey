@@ -251,6 +251,19 @@ export const COMPLETIONS_MODELS: WokeyCompletionsSpec[] = [
 		inputLimits: { images: { resize: { maxWidth: 2000, maxHeight: 2000, maxBytes: 4718592, jpegQuality: 80 } } },
 	},
 	{
+		// GLM-5.4 carries the same rates as 5.3 upstream ($1.20/$4.18 per 1M), so
+		// the baked wokey figures below are seeded from the 5.3 row; the live
+		// catalog reconciles them on session start. Unlike 5.3 it accepts images
+		// (`inputModalities` text+image), hence the resize limits.
+		// `maxTokens` is seeded at a conservative 64k and corrected by the catalog.
+		id: "glm-5.4", name: "GLM-5.4", route: "openai-chat", vendor: "Zhipu",
+		input: 0.21, output: 0.66, cacheRead: 0.039, cacheWrite: 0, contextWindow: 1_000_000, maxTokens: 64_000,
+		inputModalities: ["text", "image"],
+		thinkingLevelMap: { off: null, minimal: null, low: "low", medium: null, high: "high", xhigh: null, max: "max" },
+		compat: { supportsStore: false, supportsDeveloperRole: false, supportsReasoningEffort: true, maxTokensField: "max_tokens", thinkingFormat: "zai", supportsStrictMode: true, zaiToolStream: true },
+		inputLimits: { images: { resize: { maxWidth: 2000, maxHeight: 2000, maxBytes: 4718592, jpegQuality: 80 } } },
+	},
+	{
 		id: "MiniMax-M3", name: "MiniMax M3", route: "openai-chat", vendor: "MiniMax",
 		input: 0.135, output: 0.54, cacheRead: 0.027, cacheWrite: 0, contextWindow: 1_000_000, maxTokens: 80_000,
 		inputModalities: ["text"],
@@ -361,6 +374,17 @@ export const COMPLETIONS_MODELS: WokeyCompletionsSpec[] = [
 		input: 1.2, output: 6, cacheRead: 0.06, cacheWrite: 0, contextWindow: 1_048_576, maxTokens: 65_536,
 		inputModalities: ["text", "image"],
 		thinkingLevelMap: { off: null, minimal: null, low: "low", medium: "medium", high: "high", xhigh: null, max: null },
+		compat: { supportsStore: false, supportsDeveloperRole: false, supportsStrictMode: true, maxTokensField: "max_tokens" },
+	},
+	{
+		// The 4-series top tier: official $3/$15 (pi's google entry), billed by wokey
+		// at the same 0.6x it applies to Argon/Carbon, so the baked figures are
+		// 1.8/9 with cacheRead at 0.05x input — the live catalog reconciles them.
+		// pi's google entry gives it `xhigh`, unlike the rest of the 4.x rows.
+		id: "gemini-4-neon", name: "Gemini 4 Neon", route: "openai-chat", vendor: "Google",
+		input: 1.8, output: 9, cacheRead: 0.09, cacheWrite: 0, contextWindow: 1_048_576, maxTokens: 65_536,
+		inputModalities: ["text", "image"],
+		thinkingLevelMap: { off: null, minimal: null, low: "low", medium: "medium", high: "high", xhigh: "xhigh", max: null },
 		compat: { supportsStore: false, supportsDeveloperRole: false, supportsStrictMode: true, maxTokensField: "max_tokens" },
 	},
 	// ── xAI ────────────────────────────────────────────────

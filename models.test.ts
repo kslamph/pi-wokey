@@ -401,7 +401,7 @@ describe("full Claude lineup", () => {
 
 describe("chat-completions vendors", () => {	it("lists the Zhipu, MiniMax, DeepSeek, Moonshot, Google and xAI rows, verified lineup first", () => {
 		const ids = allSpecs().map((s) => s.id);
-		for (const id of ["glm-5.3", "glm-5.3-flash", "MiniMax-M3", "MiniMax-M3.1-Flash", "deepseek-v4.1-flash", "deepseek-v4-pro", "kimi-k3", "kimi-k3.1-pro", "gemini-3.8-flash", "gemini-4-argon", "gemini-4-carbon", "gemini-4-hydrogen", "grok-4.7"]) {
+		for (const id of ["glm-5.3", "glm-5.4", "glm-5.3-flash", "MiniMax-M3", "MiniMax-M3.1-Flash", "deepseek-v4.1-flash", "deepseek-v4-pro", "kimi-k3", "kimi-k3.1-pro", "gemini-3.8-flash", "gemini-4-argon", "gemini-4-carbon", "gemini-4-hydrogen", "gemini-4-neon", "grok-4.7"]) {
 			expect(ids).toContain(id);
 		}
 		// Removed from the lineup: the retired V4 Flash and its dead `deepseek-flash` id.
@@ -486,7 +486,7 @@ describe("chat-completions vendors", () => {	it("lists the Zhipu, MiniMax, DeepS
 
 	it("resolves the new vendors to openai-completions with their family thinking maps", () => {
 		const byId = Object.fromEntries(allSpecs().map((s) => [s.id, toModel(s)]));
-		for (const id of ["kimi-k3", "kimi-k3.1-pro", "gemini-3.8-flash", "gemini-4-hydrogen", "gemini-4-argon", "gemini-4-carbon", "grok-4.7", "MiniMax-M3.1-Flash"]) {
+		for (const id of ["kimi-k3", "kimi-k3.1-pro", "gemini-3.8-flash", "gemini-4-hydrogen", "gemini-4-argon", "gemini-4-carbon", "gemini-4-neon", "grok-4.7", "MiniMax-M3.1-Flash"]) {
 			expect(byId[id]!.api, id).toBe("openai-completions");
 			expect(byId[id]!.baseUrl, id).toBe("https://api.wokey.ai/v1");
 			expect(byId[id]!.input, id).toEqual(["text", "image"]);
@@ -580,6 +580,7 @@ describe("thinking levels", () => {
 		"claude-fable-5-1": ["low", "medium", "high", "xhigh", "max"],
 		"claude-fable-5": ["low", "medium", "high", "xhigh", "max"],
 		"glm-5.3": ["low", "high", "max"],
+		"glm-5.4": ["low", "high", "max"],
 		"glm-5.3-flash": ["low", "high", "max"],
 		"MiniMax-M3": ["off", "high"],
 		"MiniMax-M3.1-Flash": ["off", "high"],
@@ -592,6 +593,7 @@ describe("thinking levels", () => {
 		"gemini-4-hydrogen": ["low", "medium", "high"],
 		"gemini-4-argon": ["low", "medium", "high"],
 		"gemini-4-carbon": ["low", "medium", "high"],
+		"gemini-4-neon": ["low", "medium", "high", "xhigh"],
 		"grok-4.7": ["low", "medium", "high", "xhigh"],
 	};
 
